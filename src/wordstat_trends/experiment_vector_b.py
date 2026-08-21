@@ -88,13 +88,16 @@ def load_wordstat_daily(path: Path) -> pd.Series:
     # The real export uses bare CR. splitlines(), unlike split("\n"), handles it.
     reader = csv.DictReader(io.StringIO("\n".join(text.splitlines())), delimiter=";")
     rows = list(reader)
-    required = {"Период", "Число запросов"}
-    if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+    if reader.fieldnames is None or "Число запросов" not in reader.fieldnames:
         raise ValueError(f"Missing required Wordstat columns in {path}")
+    date_fields = [field for field in ("Дата", "Период") if field in reader.fieldnames]
+    if len(date_fields) != 1:
+        raise ValueError(f"Expected exactly one daily date column in {path}, got {date_fields}")
+    date_field = date_fields[0]
     if not rows:
         raise ValueError(f"No observations in {path}")
 
-    dates = pd.DatetimeIndex([parse_daily_period(row["Период"]) for row in rows])
+    dates = pd.DatetimeIndex([parse_daily_period(row[date_field]) for row in rows])
     values = [parse_request_count(row["Число запросов"]) for row in rows]
     series = pd.Series(values, index=dates, name="requests", dtype=float)
     if series.index.has_duplicates or not series.index.is_monotonic_increasing:
@@ -102,6 +105,9 @@ def load_wordstat_daily(path: Path) -> pd.Series:
     expected = pd.date_range(series.index[0], series.index[-1], freq="D")
     if not series.index.equals(expected):
         raise ValueError(f"Daily series has gaps in {path}")
+    # Preserve the proven daily frequency for statsmodels instead of making it
+    # infer the same fact again for every fit.
+    series.index = expected
     return series
 
 
@@ -370,8 +376,8 @@ def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
         for removed in TRUNCATIONS:
             window = train if removed == 0 else train.iloc[:-removed]
             key = f"minus_{removed}"
-            sktime_fit = fit_sktime(window)
-            statsforecast_fit = fit_statsforecast(window)
+            sktime_fit = fit_sktime(window, forecast_horizon=len(holdout))
+            statsforecast_fit = fit_statsforecast(window, forecast_horizon=len(holdout))
             fitted_objects[key] = {"sktime": sktime_fit, "statsforecast": statsforecast_fit}
             fits[key] = {
                 "observations": len(window),

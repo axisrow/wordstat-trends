@@ -10,10 +10,12 @@ from wordstat_trends.experiment_vector_b import (
     split_experiment_window,
 )
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 def _write_daily_fixture(path: Path, *, rows: int = 58) -> None:
     start = date(2026, 6, 23)
-    lines = ["Период;Число запросов;Доля, %;График"]
+    lines = ["Дата;Число запросов;Доля, %;График"]
     for offset in range(rows):
         current = start + timedelta(days=offset)
         lines.append(f"{current:%d.%m.%Y};1 234,5;0,5;x")
@@ -57,3 +59,27 @@ def test_rejects_short_daily_export_without_padding(tmp_path: Path) -> None:
     series = load_wordstat_daily(path)
     with pytest.raises(ValueError, match="Expected at least 56 real daily rows, got 55"):
         split_experiment_window(series)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "dynamics_daily_high_freq_mvp.csv",
+        "dynamics_daily_mid_freq_mvp.csv",
+        "dynamics_daily_seasonal_mvp.csv",
+    ],
+)
+def test_real_daily_fixtures_preserve_export_and_balanced_window(filename: str) -> None:
+    path = FIXTURES / filename
+    raw_bytes = path.read_bytes()
+    assert raw_bytes.startswith(b"\xef\xbb\xbf")
+    assert raw_bytes.count(b"\r") == 59
+    assert raw_bytes.count(b"\n") == 0
+
+    series = load_wordstat_daily(path)
+    train, holdout = split_experiment_window(series)
+
+    assert len(series) == 58
+    assert len(train) == 56
+    assert len(holdout) == 2
+    assert train.groupby(train.index.dayofweek).size().tolist() == [8] * 7
