@@ -1,0 +1,63 @@
+[project]
+name = "wordstat-trends"
+version = "0.1.0"
+description = "Витрина трендов поискового спроса Рунета на данных Яндекс Вордстат"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git",
+    "sktime==1.1.0",
+    "statsmodels==0.14.6",
+    "statsforecast==2.0.1",
+    "ruptures==1.1.10",
+    "tsfresh==0.21.2",
+    "tslearn==0.9.0",
+    "scikit-learn==1.7.2",
+    "pandas==2.3.3",
+]
+
+[project.optional-dependencies]
+nlp = [
+    "sentence-transformers==6.0.0",
+    "torch==2.13.0",
+    "pymorphy3==2.0.6",
+]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wordstat_trends"]
+
+[tool.hatch.metadata]
+# `wordstat` объявлен как прямая git-ссылка (project.dependencies) — hatchling
+# по умолчанию такое запрещает (PEP 508 direct reference).
+allow-direct-references = true
+
+# ВАЖНО (только под `uv pip install`, не под обычный `pip`): установка
+# требует --override install-overrides.txt, см. docs/STACK.md →
+# «browser-use: обходной путь для установки». `wordstat-cli` объявляет свою
+# зависимость `browser-use` через `[tool.uv.sources]` как
+# `{ path = "../browser-use", editable = true }` — путь относительно ЕГО
+# СОБСТВЕННОГО репозитория. `tool.uv.sources` этого проекта переопределяет
+# источники только для ПРЯМЫХ зависимостей wordstat-trends, а не для
+# транзитивных зависимостей внутри `wordstat` (git-пакета) — поэтому
+# объявить здесь `browser-use = { index = "pypi" }` не помогает, путь
+# `../browser-use` всё равно резолвится при сборке `wordstat`.

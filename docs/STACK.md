@@ -78,6 +78,50 @@ API. Срез: **2026-08-21**.
   оставалась лёгкой.
 - `scikit-learn` встаёт **1.7.2**, а не последний 1.9.0: `sktime` ограничивает
   его сверху (`<1.8`). Это нормально, но объясняет расхождение с PyPI.
+- Extra `[forecasting]` у `sktime` **не берём**: он тянет `prophet` и
+  `neuralprophet` — оба в разделе «Не берём»/«Мёртвое» ниже. `sktime` без
+  этого extra плюс явный пин `statsforecast==2.0.1` даёт то же рабочее
+  сочетание (в т.ч. `sktime.forecasting.statsforecast.StatsForecastAutoETS`)
+  без пакетов, которые проект сознательно отверг. Проверено:
+  `uv pip install --dry-run "sktime[forecasting]==1.1.0"` действительно
+  добавляет `prophet==1.3.0`, а установка без extra — нет.
+
+### browser-use: обходной путь для установки (открытый вопрос №5 эпика)
+
+Воспроизвелось. `wordstat` (git-зависимость на `wordstat-cli`) в своём
+`pyproject.toml` объявляет `browser-use` через
+`[tool.uv.sources] browser-use = { path = "../browser-use", editable = true }`
+— путь относительно репозитория `wordstat-cli`. Вне его дерева (в том числе
+здесь, когда `wordstat` ставится как git-зависимость) каталога `../browser-use`
+не существует, и `uv pip install -e ".[dev]"` падает:
+
+```
+The source distribution `git+https://github.com/axisrow/wordstat-cli.git#subdirectory=../browser-use`
+has no subdirectory `../browser-use`
+```
+
+Переопределить источник в `[tool.uv.sources]` **этого** проекта не помогает:
+таблица `tool.uv.sources` действует только для прямых зависимостей
+`wordstat-trends`, а `browser-use` — прямая зависимость `wordstat`
+(транзитивный пакет внутри git-зависимости), не наш проект. Рабочий обход —
+файл ограничений (`uv pip install --override`), переопределяющий источник на
+PyPI-релиз `browser-use` (0.13.8, опубликован и ставится нормально):
+зафиксирован в [`install-overrides.txt`](../install-overrides.txt).
+
+```bash
+uv pip install -e ".[dev]" --override install-overrides.txt
+```
+
+Без `--override` установка падает на этом шаге при **любом** наборе extra под
+`uv pip install` — проверено отдельно для `base`, `[dev]` и `[nlp]`.
+
+**Это специфично для `uv`, не для `pip` вообще.** `[tool.uv.sources]` —
+расширение самого `uv`; обычный `pip` его не читает и разрешает `browser-use`
+с PyPI сам. Проверено: `python -m pip install -e ".[dev]"` (без `uv`, в venv с
+`--seed`) отрабатывает **без** `--override` и без ошибки `../browser-use`.
+Значит обход нужен только там, где установка идёт через `uv pip install` —
+важно для CI (#9) и контейнерной сборки (#8): если они используют
+`pip install` напрямую, обход не требуется.
 
 ## Не берём
 
@@ -85,7 +129,7 @@ API. Срез: **2026-08-21**.
 |---|---|---|
 | [darts](https://github.com/unit8co/darts) | 9498 | Дублирует `sktime`; выбираем одну библиотеку, чтобы не держать два API прогноза |
 | [prophet](https://github.com/facebook/prophet) | 20365 | На 60–100 месячных точках избыточен, а декомпозиция менее прозрачна, чем у ETS/Theta. Против принципа интерпретируемости |
-| [stumpy](https://github.com/stumpy-dev/stumpy) | 4148 | Matrix profile — блестящая вещь на десятках тысяч точек; на 100 точках бессмысленна |
+| [stumpy](https://github.com/stumpy-dev/stumpy) | 4148 | Matrix profile — блестящая вещь на десятках тысяч точек; на 100 точках бессмысленна. Тем не менее встаёт в окружение — приходит транзитивно через `tsfresh` (`uv pip show stumpy` → `Required-by: tsfresh`), напрямую не используется и не импортируется нашим кодом |
 | [gluonts](https://github.com/awslabs/gluonts) | 5228 | Вероятностный прогноз с уклоном в deep learning; для наших объёмов избыточен |
 | [neuralforecast](https://github.com/Nixtla/neuralforecast) / [mlforecast](https://github.com/Nixtla/mlforecast) | 4246 / 1269 | Global forecasting по тысячам рядов. Честный повод появится, **если** соберём тысячи фраз и захотим одну модель на всех — но не в первой фазе |
 | [pyod](https://github.com/yzhao062/pyod) | 9974 | Детекция выбросов преимущественно в табличных данных; наша задача — аномалии во времени |
@@ -122,6 +166,45 @@ API. Срез: **2026-08-21**.
 - Эмбеддинги: `sergeyzh/BERTA` (0.1B, 768 dim, MIT) — дистилляция FRIDA с
   близким качеством и на порядок дешевле по CPU. Требует префиксов задач
   (`clustering:` / `categorize:`), без них качество заметно падает.
+
+## Фактический результат установки (Фаза 0)
+
+Проверено `uv pip install -e ".[dev]"` (с `--override install-overrides.txt`, см.
+выше) в чистом `uv venv --python 3.12` 2026-08-21, macOS, `uv 0.10.6`.
+Собранные пины `pyproject.toml`:
+
+| Пакет | Версия в `pyproject.toml` |
+|---|---|
+| `pandas` | 2.3.3 (было без пина — зафиксировано по фактическому резолву) |
+| `pytest` (dev) | 9.1.1 |
+| `ruff` (dev) | 0.16.4 |
+| `sentence-transformers` (nlp) | 6.0.0 |
+| `torch` (nlp) | 2.13.0 |
+
+Проверки, пройденные в собранном окружении (не только текст конфига):
+
+- **`.python-version` реально подхватывается, без явного `--python`.**
+  Проверено отдельно: `uv venv /tmp/probe-nopy` (без флага, из корня
+  репозитория, где лежит `.python-version`) → `python -V` даёт `3.12.10`, а
+  не «свежайший доступный», как без файла. Все остальные проверки в этом
+  разделе используют `--python 3.12` явно — это не подменяет собой данную
+  проверку, поэтому она приведена отдельной строкой.
+- `import sktime, statsforecast, statsmodels, ruptures, tsfresh, tslearn,
+  sklearn, pandas, wordstat` — все базовые пакеты импортируются.
+- `from sktime.forecasting.statsforecast import StatsForecastAutoETS` —
+  именно тот класс, который в STACK.md выше назван местом, где на Python 3.13
+  вылезает `ImportError` в рантайме. Импортируется без ошибок на 3.12.
+- `import prophet` в окружении `base + dev` → `ModuleNotFoundError` — extra
+  `[forecasting]` действительно не используется, `prophet` не тянется.
+- `import torch` в окружении `base + dev` (без `[nlp]`) → `ModuleNotFoundError`
+  — extra `nlp` не тянется по умолчанию, базовая установка остаётся лёгкой.
+- Установка `.[nlp]` отдельно — `torch==2.13.0` и `sentence-transformers==6.0.0`
+  встают, как ожидается; `import pymorphy3` в этом же окружении — без ошибок
+  (исторически именно эта библиотека ломалась на новых версиях Python, см.
+  «Смежное» выше).
+- `ruff check .` → `All checks passed!`.
+- `pytest --collect-only` → собирает без ошибок (0 тестов — их пока нет, это
+  задача следующих issue).
 
 ## Как перепроверить
 
