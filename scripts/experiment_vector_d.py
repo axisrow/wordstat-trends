@@ -620,30 +620,34 @@ def run_discrimination_check(vectors: dict[str, ParamVector]) -> dict:
 
 def is_comparison_unstable(comparison: dict, thresholds: dict) -> bool:
     """Единая логика стоп-условия устойчивости, общая для main() и
-    main_daily(): относительная разница уровня выше порога — всегда
-    нестабильность (level_diff_rel определён при full.level != 0 всегда).
+    main_daily().
 
-    Сезонные метрики (seasonal_corr, при наличии в thresholds —
-    seasonal_mae_rel_to_full_range) сравнимы, только если both_seasonal
-    истинно; в противном случае они NaN, и любое прямое `nan < порог`/
-    `nan > порог` в Python возвращает False — что тихо трактовало бы
-    несравнимый случай как "стабильно". both_seasonal=False сам по себе
-    считается нестабильностью: сезонность заявленно есть на полном ряде,
-    но не воспроизводится на укороченном (или наоборот), значит вектор
-    параметров модели не устойчив в заявленном виде.
+    Все метрики сравнения (level_diff_rel, при both_seasonal=True —
+    seasonal_corr и, при наличии в thresholds, seasonal_mae_rel_to_full_range)
+    могут прийти NaN в вырожденных случаях: full.level == 0 (level_diff_rel),
+    константный сезонный вектор с нулевой дисперсией (seasonal_corr через
+    np.corrcoef) или плоский полный сезонный профиль (seasonal_mae_rel).
+    Прямое `nan < порог`/`nan > порог`/`abs(nan) > порог` в Python всегда
+    возвращает False — что тихо трактовало бы неизмеренный случай как
+    "стабильно". Поэтому каждая метрика, участвующая в сравнении,
+    явно проверяется на NaN и трактуется как нестабильность.
+
+    both_seasonal=False само по себе тоже считается нестабильностью:
+    сезонность заявленно есть на полном ряде, но не воспроизводится на
+    укороченном (или наоборот), значит вектор параметров модели не
+    устойчив в заявленном виде.
     """
-    if abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"]:
+    level_diff_rel = comparison["level_diff_rel"]
+    if math.isnan(level_diff_rel) or abs(level_diff_rel) > thresholds["max_level_diff_rel_abs"]:
         return True
     if not comparison["both_seasonal"]:
         return True
-    if comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]:
+    seasonal_corr = comparison["seasonal_corr"]
+    if math.isnan(seasonal_corr) or seasonal_corr < thresholds["min_seasonal_corr"]:
         return True
     max_seasonal_mae_rel = thresholds.get("max_seasonal_mae_rel")
     if max_seasonal_mae_rel is not None:
         seasonal_mae_rel = comparison["seasonal_mae_rel_to_full_range"]
-        # NaN (плоский полный сезонный профиль, seasonal_full_range == 0) —
-        # метрика не определена, а `nan > порог` в Python всегда False, что
-        # тихо пропустило бы вырожденный случай как "стабильно".
         if math.isnan(seasonal_mae_rel) or seasonal_mae_rel > max_seasonal_mae_rel:
             return True
     return False

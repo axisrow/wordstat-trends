@@ -304,6 +304,39 @@ def test_is_comparison_unstable_flat_profile_mae_rel_does_not_silently_pass():
     assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is True
 
 
+def test_is_comparison_unstable_nan_level_diff_rel_is_not_silently_stable():
+    """Регрессия (Codex + /review, цикл 2): при full.level == 0 level_diff_rel
+    приходит NaN, а `abs(nan) > порог` в Python — False. Комбинация с
+    both_seasonal=True и валидным seasonal_corr раньше давала False целиком
+    (уровень не измерен, но gate этого не замечал).
+    """
+    comparison = {
+        "level_diff_rel": float("nan"),
+        "both_seasonal": True,
+        "seasonal_corr": 0.99,
+        "seasonal_mae_rel_to_full_range": 0.05,
+    }
+
+    assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is True
+
+
+def test_is_comparison_unstable_nan_seasonal_corr_with_both_seasonal_true_is_not_silently_stable():
+    """Регрессия (Codex + /review, цикл 2): both_seasonal=True не гарантирует
+    seasonal_corr не-NaN — вырожденный (константный) сезонный вектор даёт
+    np.corrcoef == NaN даже когда обе стороны формально "имеют сезонность".
+    `nan < порог` в Python — False, что тихо считало бы такое сравнение
+    стабильным.
+    """
+    comparison = {
+        "level_diff_rel": 0.01,
+        "both_seasonal": True,
+        "seasonal_corr": float("nan"),
+        "seasonal_mae_rel_to_full_range": 0.05,
+    }
+
+    assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is True
+
+
 def test_is_comparison_unstable_passes_genuinely_stable_comparison():
     comparison = {
         "level_diff_rel": 0.01,
