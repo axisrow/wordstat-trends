@@ -85,6 +85,12 @@ API. Срез: **2026-08-21**.
   без пакетов, которые проект сознательно отверг. Проверено:
   `uv pip install --dry-run "sktime[forecasting]==1.1.0"` действительно
   добавляет `prophet==1.3.0`, а установка без extra — нет.
+- Зависимость сборщика `wordstat` закреплена на **конкретный SHA**
+  `wordstat-cli`, не на плавающий `main`: `wordstat @
+  git+https://github.com/axisrow/wordstat-cli.git@<sha>`. Плавающая ссылка
+  противоречила бы тезису проекта о воспроизводимости — следующий коммит в
+  `wordstat-cli` молча менял бы то, что реально ставится. Обновлять SHA
+  вручную при осознанном апгрейде, не автоматически.
 
 ### browser-use: обходной путь для установки (открытый вопрос №5 эпика)
 
@@ -93,35 +99,42 @@ API. Срез: **2026-08-21**.
 `[tool.uv.sources] browser-use = { path = "../browser-use", editable = true }`
 — путь относительно репозитория `wordstat-cli`. Вне его дерева (в том числе
 здесь, когда `wordstat` ставится как git-зависимость) каталога `../browser-use`
-не существует, и `uv pip install -e ".[dev]"` падает:
+не существует, и без обхода и `uv lock`, и `uv pip install -e ".[dev]"` падают:
 
 ```
-The source distribution `git+https://github.com/axisrow/wordstat-cli.git#subdirectory=../browser-use`
+The source distribution `git+https://github.com/axisrow/wordstat-cli.git@<sha>#subdirectory=../browser-use`
 has no subdirectory `../browser-use`
 ```
 
 Переопределить источник в `[tool.uv.sources]` **этого** проекта не помогает:
 таблица `tool.uv.sources` действует только для прямых зависимостей
 `wordstat-trends`, а `browser-use` — прямая зависимость `wordstat`
-(транзитивный пакет внутри git-зависимости), не наш проект. Рабочий обход —
-файл ограничений (`uv pip install --override`), переопределяющий источник на
-PyPI-релиз `browser-use` (0.13.8, опубликован и ставится нормально):
-зафиксирован в [`install-overrides.txt`](../install-overrides.txt).
+(транзитивный пакет внутри git-зависимости), не наш проект. Единственный
+уровень, где `uv` слушает override для *транзитивных* зависимостей —
+`[tool.uv] override-dependencies` в `pyproject.toml` (в отличие от
+`tool.uv.sources`, эта таблица действует на весь граф разрешения, а не
+только на прямые зависимости):
 
-```bash
-uv pip install -e ".[dev]" --override install-overrides.txt
+```toml
+[tool.uv]
+override-dependencies = [
+    "browser-use==0.13.8",
+]
 ```
 
-Без `--override` установка падает на этом шаге при **любом** наборе extra под
-`uv pip install` — проверено отдельно для `base`, `[dev]` и `[nlp]`.
+Это ставит `browser-use` с PyPI (0.13.8, опубликован и ставится нормально) и
+работает одинаково для `uv lock`, `uv sync` и `uv pip install -e ".[dev]"` —
+без внешнего файла ограничений и без флага `--override` в командной строке.
 
-**Это специфично для `uv`, не для `pip` вообще.** `[tool.uv.sources]` —
-расширение самого `uv`; обычный `pip` его не читает и разрешает `browser-use`
-с PyPI сам. Проверено: `python -m pip install -e ".[dev]"` (без `uv`, в venv с
-`--seed`) отрабатывает **без** `--override` и без ошибки `../browser-use`.
-Значит обход нужен только там, где установка идёт через `uv pip install` —
-важно для CI (#9) и контейнерной сборки (#8): если они используют
-`pip install` напрямую, обход не требуется.
+**Это специфично для `uv`, не для `pip` вообще.** `[tool.uv.sources]` и
+`[tool.uv]` — расширения самого `uv`; обычный `pip` их не читает и разрешает
+`browser-use` с PyPI сам, без какого-либо обхода. Проверено:
+`python -m pip install -e ".[dev]"` (без `uv`, в venv с `--seed`) отрабатывает
+без ошибки `../browser-use` и без секции `[tool.uv]` в `pyproject.toml`.
+Значит обход актуален только там, где установка идёт через `uv` (`uv lock`,
+`uv sync`, `uv pip install`) — важно для CI (#9) и контейнерной сборки (#8):
+если они используют `pip install` напрямую, `[tool.uv]` не нужен вовсе (но и
+не мешает — `pip` его просто не видит).
 
 ## Не берём
 
@@ -169,9 +182,14 @@ uv pip install -e ".[dev]" --override install-overrides.txt
 
 ## Фактический результат установки (Фаза 0)
 
-Проверено `uv pip install -e ".[dev]"` (с `--override install-overrides.txt`, см.
-выше) в чистом `uv venv --python 3.12` 2026-08-21, macOS, `uv 0.10.6`.
-Собранные пины `pyproject.toml`:
+Проверено `uv pip install -e ".[dev]"`, `uv sync --extra dev` (по `uv.lock`) и
+`uv lock` (с `[tool.uv] override-dependencies`, см. выше) в чистом
+`uv venv --python 3.12` 2026-08-21, macOS, `uv 0.10.6`. `uv.lock` закоммичен в
+репозиторий — это приложение, а не библиотека, ставится оно, а не тянется
+как зависимость, поэтому lock обслуживает воспроизводимость напрямую: без
+него `sktime`/`statsmodels`/т. д. при следующей сборке контейнера могли бы
+приехать другими патч-версиями несмотря на явные пины (если пины ослабнут
+или появится ещё непинованный пакет). Собранные пины `pyproject.toml`:
 
 | Пакет | Версия в `pyproject.toml` |
 |---|---|
@@ -202,6 +220,14 @@ uv pip install -e ".[dev]" --override install-overrides.txt
   встают, как ожидается; `import pymorphy3` в этом же окружении — без ошибок
   (исторически именно эта библиотека ломалась на новых версиях Python, см.
   «Смежное» выше).
+- `uv sync --extra dev` из закоммиченного `uv.lock` в отдельном чистом venv
+  ставит те же версии и проходит те же проверки импортов (в т.ч.
+  `StatsForecastAutoETS`, отсутствие `prophet`/`torch`) — lock и
+  `pyproject.toml` не разошлись.
+- `wordstat` ставится с закреплённого SHA `wordstat-cli`
+  (`45512d402cd75e8c30703c2bfdb86cb1a7a059e5`), а не с плавающего `main` —
+  видно в выводе установки: `wordstat==0.1.0 (from
+  git+https://github.com/axisrow/wordstat-cli.git@45512d40...)`.
 - `ruff check .` → `All checks passed!`.
 - `pytest --collect-only` → собирает без ошибок (0 тестов — их пока нет, это
   задача следующих issue).

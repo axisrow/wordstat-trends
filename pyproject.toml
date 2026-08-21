@@ -7,7 +7,7 @@ requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git",
+    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git@45512d402cd75e8c30703c2bfdb86cb1a7a059e5",
     "sktime==1.1.0",
     "statsmodels==0.14.6",
     "statsforecast==2.0.1",
@@ -51,13 +51,18 @@ packages = ["src/wordstat_trends"]
 # по умолчанию такое запрещает (PEP 508 direct reference).
 allow-direct-references = true
 
-# ВАЖНО (только под `uv pip install`, не под обычный `pip`): установка
-# требует --override install-overrides.txt, см. docs/STACK.md →
-# «browser-use: обходной путь для установки». `wordstat-cli` объявляет свою
-# зависимость `browser-use` через `[tool.uv.sources]` как
-# `{ path = "../browser-use", editable = true }` — путь относительно ЕГО
-# СОБСТВЕННОГО репозитория. `tool.uv.sources` этого проекта переопределяет
-# источники только для ПРЯМЫХ зависимостей wordstat-trends, а не для
-# транзитивных зависимостей внутри `wordstat` (git-пакета) — поэтому
-# объявить здесь `browser-use = { index = "pypi" }` не помогает, путь
-# `../browser-use` всё равно резолвится при сборке `wordstat`.
+# `wordstat-cli` объявляет свою зависимость `browser-use` через
+# `[tool.uv.sources]` как `{ path = "../browser-use", editable = true }` —
+# путь относительно ЕГО СОБСТВЕННОГО репозитория. `tool.uv.sources` этого
+# проекта переопределяет источники только для ПРЯМЫХ зависимостей
+# wordstat-trends, а не для транзитивных зависимостей внутри `wordstat`
+# (git-пакета) — поэтому объявить здесь `browser-use = { index = "pypi" }`
+# не помогает, путь `../browser-use` всё равно резолвится при сборке
+# `wordstat`. Единственный уровень, где `uv` (и `uv lock`, и `uv pip install`)
+# слушает override для транзитивных зависимостей — `[tool.uv]
+# override-dependencies`, отсюда и ниже. См. docs/STACK.md →
+# «browser-use: обходной путь для установки».
+[tool.uv]
+override-dependencies = [
+    "browser-use==0.13.8",
+]
