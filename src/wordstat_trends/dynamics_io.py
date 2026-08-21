@@ -9,8 +9,19 @@
   (каждая строка данных заканчивается на `;`);
 * разделитель тысяч в «Число запросов» — обычный ASCII-пробел (`997 977`);
 * десятичный разделитель в долях — запятая (`0,0115`);
-* период — русское название месяца **в именительном падеже** плюс год
-  (`август 2024`), а не дата в каком-либо машинном формате.
+* период — **зависит от грануляции**, и это единственное, что различается
+  между месячной и дневной выгрузкой:
+
+  - месячная: русское название месяца в именительном падеже плюс год
+    (`август 2024`), а не дата в каком-либо машинном формате;
+  - дневная: дата с точками (`22.06.2026`), то есть `DD.MM.YYYY`.
+
+  Поэтому месячный разбор периода **нельзя переиспользовать вслепую** —
+  для каждой грануляции своя функция.
+
+Отдельная ловушка дневной выгрузки: четвёртое поле заголовка (заголовок
+графика) содержит конец окна, и эта метка **эксклюзивна** — она на день
+опережает последнюю строку данных. Даты берём только из строк.
 """
 
 from __future__ import annotations
@@ -57,12 +68,29 @@ def _parse_count(raw: str) -> int:
     return int(raw.replace(" ", "").replace("\xa0", ""))
 
 
-def load_dynamics(path: str | Path) -> pd.Series:
-    """Читает `dynamics`-CSV в месячный ряд числа запросов.
+def _parse_day(raw: str) -> pd.Timestamp:
+    """`"22.06.2026"` → `Timestamp('2026-06-22')`.
 
-    Возвращает `pd.Series` с `PeriodIndex` месячной частоты, отсортированный
-    по периоду (порядок в файле не считается заслуживающим доверия).
+    Дневной формат периода — не тот же, что месячный: там русский месяц
+    словом, здесь `DD.MM.YYYY`. `format` задан явно, чтобы `06.07.2026`
+    никогда не разобралось как 7 июня по локали или эвристике pandas.
     """
+    try:
+        return pd.to_datetime(raw, format="%d.%m.%Y")
+    except ValueError:
+        raise ValueError(f"Не дневной период Вордстата (ожидался DD.MM.YYYY): {raw!r}") from None
+
+
+def load_dynamics(path: str | Path, granularity: str = "monthly") -> pd.Series:
+    """Читает `dynamics`-CSV в ряд числа запросов.
+
+    `granularity="monthly"` — индекс `PeriodIndex` месячной частоты,
+    `granularity="daily"` — `DatetimeIndex` по дням. Ряд сортируется по
+    периоду: порядок строк в файле не считается заслуживающим доверия.
+    """
+    if granularity not in _PERIOD_PARSERS:
+        raise ValueError(f"Неизвестная грануляция: {granularity!r}")
+    parse_period = _PERIOD_PARSERS[granularity]
     text = Path(path).read_text(encoding="utf-8-sig")
     # `splitlines()` режет по CR, LF и CRLF — единственное чтение, которое
     # переживает CR-only переводы строк Вордстата.
@@ -87,15 +115,21 @@ def load_dynamics(path: str | Path) -> pd.Series:
             # Иначе строка без разделителя падала бы голым IndexError — в этом
             # модуле все остальные поломки формата сообщают о себе ValueError.
             raise ValueError(f"В строке меньше двух полей: {row!r}")
-        records.append((_parse_period(row[0].strip()), _parse_count(row[1])))
+        records.append((parse_period(row[0].strip()), _parse_count(row[1])))
 
     if not records:
         raise ValueError(f"В файле нет строк данных: {path}")
 
     records.sort()
     periods, counts = zip(*records, strict=True)
-    return pd.Series(
-        list(counts),
-        index=pd.PeriodIndex(periods, freq="M"),
-        name="queries",
+    index = (
+        pd.PeriodIndex(periods, freq="M")
+        if granularity == "monthly"
+        else pd.DatetimeIndex(periods)
     )
+    if index.has_duplicates:
+        raise ValueError("В файле повторяются периоды")
+    return pd.Series(list(counts), index=index, name="queries")
+
+
+_PERIOD_PARSERS = {"monthly": _parse_period, "daily": _parse_day}
