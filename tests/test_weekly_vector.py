@@ -83,3 +83,34 @@ def test_seasonal_shape_survives_truncation(seasonal_train):
     for cut in (7, 14):
         profile = sktime_vector(seasonal_train.iloc[:-cut]).seasonal
         assert np.corrcoef(reference, profile)[0, 1] > 0.9
+
+
+def test_aic_is_not_comparable_across_backends(seasonal_train):
+    """AIC двух бэкендов несопоставимы: разные определения правдоподобия.
+
+    statsforecast считает концентрированное правдоподобие `−n/2·log(SSE)`,
+    опуская аддитивные константы, которые statsmodels включает. Разрыв
+    остаётся даже при одинаковой спецификации, поэтому «разница AIC» между
+    бэкендами не означает, что одна модель лучше другой.
+    """
+    import warnings
+
+    from sktime.forecasting.ets import AutoETS
+    from statsforecast.models import AutoETS as StatsForecastAutoETS
+
+    values = seasonal_train.astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sk = AutoETS(auto=False, error="add", trend=None, seasonal=None, sp=SP, n_jobs=1)
+        sk.fit(values)
+        sf = StatsForecastAutoETS(season_length=SP, model="ANN")
+        sf.fit(values.to_numpy())
+
+    sf_loglik = float(np.ravel(sf.model_["loglik"])[0])
+    residuals = np.asarray(sf.model_["residuals"], dtype=float)
+    concentrated = -len(values) / 2 * np.log(np.sum(residuals**2))
+
+    # Правдоподобие statsforecast — ровно концентрированная форма.
+    assert sf_loglik == pytest.approx(concentrated, abs=0.01)
+    # И оно систематически ниже, чем у statsmodels, при той же спецификации.
+    assert sf_loglik < float(sk._fitted_forecaster.llf) - 20
