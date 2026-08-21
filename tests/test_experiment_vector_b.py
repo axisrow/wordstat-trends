@@ -1,40 +1,59 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
-from wordstat_trends.experiment_vector_b import load_wordstat_monthly, parse_period, run_experiment
+from wordstat_trends.experiment_vector_b import (
+    load_wordstat_daily,
+    parse_daily_period,
+    parse_request_count,
+    split_experiment_window,
+)
 
-FIXTURES = Path(__file__).parent / "fixtures"
+
+def _write_daily_fixture(path: Path, *, rows: int = 59) -> None:
+    start = date(2026, 6, 23)
+    lines = ["Период;Число запросов;Доля, %;График"]
+    for offset in range(rows):
+        current = start + timedelta(days=offset)
+        lines.append(f"{current:%d.%m.%Y};1 234,5;0,5;x")
+    path.write_bytes(("\ufeff" + "\r".join(lines) + "\r").encode())
 
 
-def test_loads_real_cr_only_wordstat_fixture() -> None:
-    raw = (FIXTURES / "dynamics_seasonal.csv").read_bytes()
+def test_parses_measured_daily_fields() -> None:
+    assert parse_daily_period("22.06.2026").date() == date(2026, 6, 22)
+    assert parse_request_count("1 234,5") == 1234.5
+
+
+@pytest.mark.parametrize("value", ["2026-06-22", "22 июня 2026", "июнь 2026"])
+def test_rejects_non_daily_period(value: str) -> None:
+    with pytest.raises(ValueError, match="Unsupported Wordstat daily period"):
+        parse_daily_period(value)
+
+
+def test_loads_bom_cr_only_and_validates_balanced_training_window(tmp_path: Path) -> None:
+    path = tmp_path / "daily.csv"
+    _write_daily_fixture(path)
+    raw = path.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" in raw and b"\n" not in raw
 
-    series = load_wordstat_monthly(FIXTURES / "dynamics_seasonal.csv")
+    series = load_wordstat_daily(path)
+    train, holdout = split_experiment_window(series)
 
-    assert len(series) == 24
-    assert str(series.index[0]) == "2024-08"
-    assert str(series.index[-1]) == "2026-07"
-    assert series.loc[parse_period("декабрь 2024")] == 1_234_632
-
-
-@pytest.mark.parametrize("value", ["2024-08", "Foo 2024", "август"])
-def test_rejects_non_wordstat_period(value: str) -> None:
-    with pytest.raises(ValueError, match="Unsupported Wordstat monthly period"):
-        parse_period(value)
+    assert len(series) == 59
+    assert len(train) == 56
+    assert len(holdout) == 3
+    assert train.index[0].date() == date(2026, 6, 23)
+    assert train.index[-1].date() == date(2026, 8, 17)
+    assert train.groupby(train.index.dayofweek).size().tolist() == [8] * 7
+    assert series.iloc[0] == 1234.5
 
 
-def test_current_fixtures_trigger_insufficient_history_stop_condition() -> None:
-    result = run_experiment(FIXTURES)
+def test_rejects_short_daily_export_without_padding(tmp_path: Path) -> None:
+    path = tmp_path / "short.csv"
+    _write_daily_fixture(path, rows=58)
 
-    assert result["status"] == "inconclusive_insufficient_history"
-    assert result["stability_passed"] is False
-    assert result["semantic_check"] == "not_run_due_to_stop_condition"
-    for windows in result["fits"].values():
-        assert windows["minus_0"]["status"] == "fit"
-        assert len(windows["minus_0"]["vector"]["seasonal"]) == 12
-        for key in ("minus_3", "minus_6"):
-            assert windows[key]["status"] == "fit_failed"
-            assert "less than two full seasonal cycles" in windows[key]["error"]
+    series = load_wordstat_daily(path)
+    with pytest.raises(ValueError, match="Expected 59 real daily rows, got 58"):
+        split_experiment_window(series)
