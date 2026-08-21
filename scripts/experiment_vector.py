@@ -127,8 +127,8 @@ def compare_vectors(full: DemandVector, shortened: DemandVector) -> tuple[float,
 
 def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
     """Render the committed, timestamp-free experiment report."""
-    rows: list[tuple[str, int, int, str, DemandVector | None]] = []
-    for _, series in series_by_file:
+    rows: list[tuple[Path, str, int, int, str, DemandVector | None]] = []
+    for path, series in series_by_file:
         for removed_months in (0, 3, 6):
             values = series.values if removed_months == 0 else series.values.iloc[:-removed_months]
             try:
@@ -137,7 +137,7 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
             except ValueError as error:
                 vector = None
                 status = f"не измерен: `{error}`"
-            rows.append((series.phrase, len(values), removed_months, status, vector))
+            rows.append((path, series.phrase, len(values), removed_months, status, vector))
 
     report = [
         "# MVP: вектор параметров ETS как представление спроса",
@@ -157,12 +157,12 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
         "| Фраза | Точек | Удалено последних месяцев | Результат |",
         "| --- | ---: | ---: | --- |",
     ]
-    for phrase, points, removed, status, _ in rows:
+    for _, phrase, points, removed, status, _ in rows:
         report.append(f"| {phrase} | {points} | {removed} | {status} |")
 
     failed_rows = [row for row in rows if row[-1] is None]
     report.extend(["", "## Векторы", ""])
-    for phrase, points, removed, _, vector in rows:
+    for _, phrase, points, removed, _, vector in rows:
         if vector is None:
             continue
         seasonal = ", ".join(f"{month}: {format_number(vector.seasonal[month])}" for month in MONTH_LABELS)
@@ -178,7 +178,17 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
             ]
         )
 
-    if not failed_rows:
+    comparisons: list[tuple[str, int, float, float, float]] = []
+    for path, series in series_by_file:
+        vectors = {removed: vector for row_path, _, _, removed, _, vector in rows if row_path == path}
+        full = vectors[0]
+        assert full is not None
+        for removed in (3, 6):
+            shortened = vectors[removed]
+            if shortened is not None:
+                comparisons.append((series.phrase, removed, *compare_vectors(full, shortened)))
+
+    if comparisons:
         report.extend(
             [
                 "## Численное сравнение с полным вектором",
@@ -190,17 +200,8 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
                 "| --- | ---: | ---: | ---: | ---: |",
             ]
         )
-        for _, series in series_by_file:
-            vectors = {removed: vector for phrase, _, removed, _, vector in rows if phrase == series.phrase}
-            full = vectors[0]
-            assert full is not None
-            for removed in (3, 6):
-                shortened = vectors[removed]
-                assert shortened is not None
-                level, trend, seasonal = compare_vectors(full, shortened)
-                report.append(
-                    f"| {series.phrase} | {removed} | {level:.4f} | {trend:.4f} | {seasonal:.4f} |"
-                )
+        for phrase, removed, level, trend, seasonal in comparisons:
+            report.append(f"| {phrase} | {removed} | {level:.4f} | {trend:.4f} | {seasonal:.4f} |")
         report.append("")
 
     report.extend(

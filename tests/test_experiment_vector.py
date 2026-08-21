@@ -55,6 +55,57 @@ def test_rejects_missing_month(tmp_path):
         experiment.read_dynamics_csv(path)
 
 
+def test_report_compares_every_successful_truncation_independently(monkeypatch):
+    experiment = load_experiment_module()
+    full = experiment.DemandVector(100.0, 10.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0)
+    shortened = experiment.DemandVector(90.0, 9.0, {month: 1.5 for month in experiment.MONTH_LABELS}, 1.0)
+    values = experiment.pd.Series(
+        range(30),
+        index=experiment.pd.period_range("2024-01", periods=30, freq="M"),
+    )
+    results = iter([full, shortened, ValueError("not enough cycles")])
+
+    def fake_fit(_):
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(experiment, "fit_monthly_vector", fake_fit)
+    report = experiment.render_report([(Path("one.csv"), experiment.DemandSeries("фраза", values))])
+
+    assert "| фраза | 3 | 0.1000 | 0.0100 | 0.5000 |" in report
+
+
+def test_report_keeps_same_phrase_exports_separate(monkeypatch):
+    experiment = load_experiment_module()
+    values = experiment.pd.Series(
+        range(30),
+        index=experiment.pd.period_range("2024-01", periods=30, freq="M"),
+    )
+    vectors = iter(
+        [
+            experiment.DemandVector(100.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector(90.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector(80.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector(200.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector(160.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector(120.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+        ]
+    )
+    monkeypatch.setattr(experiment, "fit_monthly_vector", lambda _: next(vectors))
+
+    report = experiment.render_report(
+        [
+            (Path("first.csv"), experiment.DemandSeries("одна фраза", values)),
+            (Path("second.csv"), experiment.DemandSeries("одна фраза", values)),
+        ]
+    )
+
+    assert "| одна фраза | 3 | 0.1000 | 0.0000 | 0.0000 |" in report
+    assert "| одна фраза | 3 | 0.2000 | 0.0000 | 0.0000 |" in report
+
+
 @pytest.mark.parametrize("removed_months", [3, 6])
 def test_shortened_monthly_series_cannot_initialize_two_seasonal_cycles(removed_months):
     experiment = load_experiment_module()
