@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -224,12 +225,22 @@ def check_weekday_balance(series: pd.Series) -> dict:
     56-дневном окне) — иначе недельный профиль смещён в пользу дней,
     представленных чаще. Не запускать AutoETS(sp=7), пока эта проверка не
     прошла (см. docs/EXPERIMENT_VECTOR_D.md, вторая итерация).
+
+    Баланс частот weekday сам по себе не гарантирует корректную временную
+    ось: окно с пропущенной датой и дубликатом другой даты того же дня
+    недели может сохранить равные частоты по всем 7 weekday, оставаясь
+    некорректным (не непрерывная последовательность дней). Поэтому
+    balanced дополнительно требует уникальности и непрерывности дат.
     """
     weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
     weekdays = series.index.to_timestamp().weekday
     counts_by_index = pd.Series(weekdays).value_counts().sort_index()
     counts = {weekday_names[i]: int(counts_by_index.get(i, 0)) for i in range(7)}
-    balanced = len(set(counts.values())) == 1
+    is_contiguous_and_unique = series.index.is_unique and (
+        len(series) == 0
+        or series.index.equals(pd.period_range(start=series.index.min(), end=series.index.max(), freq="D"))
+    )
+    balanced = len(set(counts.values())) == 1 and is_contiguous_and_unique
     return {"counts_by_weekday": counts, "balanced": balanced}
 
 
@@ -607,6 +618,37 @@ def run_discrimination_check(vectors: dict[str, ParamVector]) -> dict:
     return result
 
 
+def is_comparison_unstable(comparison: dict, thresholds: dict) -> bool:
+    """Единая логика стоп-условия устойчивости, общая для main() и
+    main_daily(): относительная разница уровня выше порога — всегда
+    нестабильность (level_diff_rel определён при full.level != 0 всегда).
+
+    Сезонные метрики (seasonal_corr, при наличии в thresholds —
+    seasonal_mae_rel_to_full_range) сравнимы, только если both_seasonal
+    истинно; в противном случае они NaN, и любое прямое `nan < порог`/
+    `nan > порог` в Python возвращает False — что тихо трактовало бы
+    несравнимый случай как "стабильно". both_seasonal=False сам по себе
+    считается нестабильностью: сезонность заявленно есть на полном ряде,
+    но не воспроизводится на укороченном (или наоборот), значит вектор
+    параметров модели не устойчив в заявленном виде.
+    """
+    if abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"]:
+        return True
+    if not comparison["both_seasonal"]:
+        return True
+    if comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]:
+        return True
+    max_seasonal_mae_rel = thresholds.get("max_seasonal_mae_rel")
+    if max_seasonal_mae_rel is not None:
+        seasonal_mae_rel = comparison["seasonal_mae_rel_to_full_range"]
+        # NaN (плоский полный сезонный профиль, seasonal_full_range == 0) —
+        # метрика не определена, а `nan > порог` в Python всегда False, что
+        # тихо пропустило бы вырожденный случай как "стабильно".
+        if math.isnan(seasonal_mae_rel) or seasonal_mae_rel > max_seasonal_mae_rel:
+            return True
+    return False
+
+
 def main() -> int:
     report: dict = {"fixtures": {}}
     full_vectors: dict[str, ParamVector] = {}
@@ -633,10 +675,10 @@ def main() -> int:
             comparison = entry["comparison_vs_full"]
             # MONTHLY_STABILITY_THRESHOLDS: относительная разница уровня > 20%
             # ИЛИ корреляция сезонного профиля < 0.5 считается "заметным дрейфом".
-            if (
-                abs(comparison["level_diff_rel"]) > MONTHLY_STABILITY_THRESHOLDS["max_level_diff_rel_abs"]
-                or comparison["seasonal_corr"] < MONTHLY_STABILITY_THRESHOLDS["min_seasonal_corr"]
-            ):
+            # both_seasonal=False тоже считается нестабильностью (см.
+            # is_comparison_unstable) — сезонность не воспроизвелась на
+            # укороченном ряде так же, как на полном.
+            if is_comparison_unstable(comparison, MONTHLY_STABILITY_THRESHOLDS):
                 any_unstable = True
 
     report["stability_not_measurable"] = any_not_measurable
@@ -737,19 +779,12 @@ def main_daily() -> int:
             if not comparison["both_seasonal"]:
                 # Хотя бы один из двух векторов не имеет сезонной компоненты —
                 # seasonal_corr/seasonal_mae_rel НЕ измерены (NaN), сравнение
-                # неприменимо. НЕ считается автоматически "стабильно": лишь
-                # уровень (level_diff_rel), который определён всегда, ещё может
-                # триггернуть стоп-условие ниже; отдельно помечаем сам факт
-                # отсутствия сезонности для честного отчёта, не подмешивая его
-                # в any_unstable по NaN-полям.
+                # неприменимо. Отдельно помечаем сам факт отсутствия сезонности
+                # для честного отчёта; is_comparison_unstable ниже уже
+                # трактует both_seasonal=False как нестабильность сама по себе
+                # (не полагаясь на NaN-сравнение с порогом).
                 any_no_seasonal_component = True
-            if abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"] or (
-                comparison["both_seasonal"]
-                and (
-                    comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]
-                    or comparison["seasonal_mae_rel_to_full_range"] > thresholds["max_seasonal_mae_rel"]
-                )
-            ):
+            if is_comparison_unstable(comparison, thresholds):
                 any_unstable = True
 
     report["stability_not_measurable"] = any_not_measurable

@@ -9,7 +9,9 @@ import pytest
 
 from scripts.experiment_vector_d import (
     DAILY_FIXTURES,
+    DAILY_STABILITY_THRESHOLDS,
     FIXTURES,
+    MONTHLY_STABILITY_THRESHOLDS,
     TRAIN_WINDOW_DAYS,
     ParamVector,
     _parse_daily_period,
@@ -20,6 +22,7 @@ from scripts.experiment_vector_d import (
     empirical_weekday_profile,
     fit_autoets_vector,
     fit_statsforecast_seasonal_profile,
+    is_comparison_unstable,
     load_daily_dynamics_csv,
     load_dynamics_csv,
     run_stability_check,
@@ -166,6 +169,21 @@ def test_load_daily_dynamics_csv_parses_all_fixtures(path: Path):
     assert (series > 0).all()
 
 
+def test_check_weekday_balance_rejects_duplicate_and_missing_date():
+    # Предохранитель проверяет только распределение по дням недели — окно с
+    # дубликатом одной даты вместо пропущенной другой (тот же weekday) может
+    # тихо сохранить баланс 8/8/8/... при фактически некорректной временной
+    # оси (пропуск + дубликат). balanced обязан учитывать непрерывность и
+    # уникальность дат, а не только частоты weekday.
+    index = list(pd.period_range(start="2026-06-22", periods=56, freq="D"))  # понедельник
+    index[10] = index[3]  # дубликат четверга вместо пропущенного четверга на позиции 10
+    series = pd.Series(range(56), index=pd.PeriodIndex(index, freq="D"))
+
+    result = check_weekday_balance(series)
+
+    assert result["balanced"] is False
+
+
 def test_daily_fixtures_train_window_is_balanced_by_weekday():
     # Предрегистрация: train = первые TRAIN_WINDOW_DAYS (56) строк, должны
     # покрывать ровно 8 полных недель, каждый день недели встречается 8 раз.
@@ -249,6 +267,52 @@ def test_compare_vectors_marks_both_seasonal_false_when_either_vector_lacks_seas
     assert comparison["both_seasonal"] is False
     assert np.isnan(comparison["seasonal_corr"])
     assert np.isnan(comparison["seasonal_mae_rel_to_full_range"])
+
+
+def test_is_comparison_unstable_requires_both_seasonal_before_using_seasonal_corr():
+    """Регрессия: main() применяла seasonal_corr < порог напрямую, без проверки
+    both_seasonal. Когда сравниваемый вектор теряет сезонность, seasonal_corr
+    приходит NaN, а `nan < 0.5` в Python — False, поэтому сравнение тихо
+    считалось "стабильным", хотя сезонность фактически не сравнивалась вовсе.
+    is_comparison_unstable обязана относиться к both_seasonal=False как к
+    сигналу нестабильности (наравне с реальным дрейфом), а не к пропуску.
+    """
+    comparison = {
+        "level_diff_rel": 0.01,  # уровень стабилен
+        "both_seasonal": False,
+        "seasonal_corr": float("nan"),
+        "seasonal_mae_rel_to_full_range": float("nan"),
+    }
+
+    assert is_comparison_unstable(comparison, MONTHLY_STABILITY_THRESHOLDS) is True
+
+
+def test_is_comparison_unstable_flat_profile_mae_rel_does_not_silently_pass():
+    """Регрессия: когда полный сезонный профиль плоский (max == min), MAE
+    относительно размаха — NaN, а `nan > порог` — False, из-за чего
+    вырожденный плоский профиль тихо проходил порог стабильности MAE даже
+    при both_seasonal=True. is_comparison_unstable обязана считать
+    NaN-метрику сравнения нестабильной, а не пропускать её.
+    """
+    comparison = {
+        "level_diff_rel": 0.01,
+        "both_seasonal": True,
+        "seasonal_corr": 0.99,  # корреляция высокая
+        "seasonal_mae_rel_to_full_range": float("nan"),  # но relative MAE не определён
+    }
+
+    assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is True
+
+
+def test_is_comparison_unstable_passes_genuinely_stable_comparison():
+    comparison = {
+        "level_diff_rel": 0.01,
+        "both_seasonal": True,
+        "seasonal_corr": 0.99,
+        "seasonal_mae_rel_to_full_range": 0.05,
+    }
+
+    assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is False
 
 
 def test_statsforecast_is_a_diagnostic_backend_not_wired_into_the_stability_gate():
