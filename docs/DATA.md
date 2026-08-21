@@ -121,8 +121,12 @@
 обработки.
 
 Полная выгрузка (24 строки, как её отдал Вордстат, включая BOM и CR-only
-переводы строк) — в
-[`tests/fixtures/dynamics_sample.csv`](../tests/fixtures/dynamics_sample.csv).
+переводы строк) для всех трёх фраз — в `tests/fixtures/`:
+[`dynamics_seasonal.csv`](../tests/fixtures/dynamics_seasonal.csv) («новогодние
+подарки»), [`dynamics_high_freq.csv`](../tests/fixtures/dynamics_high_freq.csv)
+(«купить телефон»),
+[`dynamics_mid_freq.csv`](../tests/fixtures/dynamics_mid_freq.csv) («курсы
+английского языка»).
 
 ## Граница истории — открытый вопрос №2 эпика закрыт
 
@@ -190,10 +194,12 @@
 
 ## Источник фактов
 
-- Сырые CSV трёх прогонов сохранены локально в
+- Полные прогоны (все четыре представления — `top_popular`, `top_related`,
+  `dynamics`, `regions` — как `.parquet` и `.csv`) сохранены локально в
   `~/Projects/wordstat/wordstat-output/runs/20260821T01*` (не в этом
-  репозитории — только `dynamics.csv` для «новогодние подарки» вынесен в
-  `tests/fixtures/` как представитель).
+  репозитории). В `tests/fixtures/` вынесен только `dynamics.csv` каждой из
+  трёх фраз — представление, на которое опирается склейка окон и
+  загрузчик.
 - Проверка границы истории — ручная, через интерфейс `wordstat.yandex.ru`,
   скриншоты не сохранялись (сессия временная), но результат
   детерминирован: селектор дат — часть интерфейса, а не результат запроса,
