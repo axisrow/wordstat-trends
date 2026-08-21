@@ -9,13 +9,16 @@ import pytest
 from scripts.experiment_vector_d import (
     DAILY_FIXTURES,
     FIXTURES,
+    TRAIN_WINDOW_DAYS,
+    ParamVector,
     _parse_daily_period,
     check_statsforecast_model_choice,
     check_weekday_balance,
     compare_seasonal_cycles_within_full_series,
+    compare_vectors,
     fit_autoets_vector,
+    load_daily_dynamics_csv,
     load_dynamics_csv,
-    main_daily,
     truncate_series,
 )
 
@@ -144,15 +147,101 @@ def test_check_weekday_balance_detects_unbalanced_window():
     assert result["balanced"] is False
 
 
-def test_main_daily_fails_clearly_when_fixtures_are_missing():
-    """Дневные фикстуры ещё не собраны (см. docs/EXPERIMENT_VECTOR_D.md) —
-    main_daily() должна падать с понятной ошибкой, а не молча пропускать
-    отсутствующие данные или подставлять что-то вместо них.
+@pytest.mark.parametrize("path", DAILY_FIXTURES.values(), ids=DAILY_FIXTURES.keys())
+def test_load_daily_dynamics_csv_parses_all_fixtures(path: Path):
+    # Собранные фикстуры: 58 строк, 23.06.2026 — 19.08.2026 (docs/EXPERIMENT_VECTOR_D.md,
+    # вторая итерация). Заголовок графика в CSV называет конечную дату 20.08 —
+    # эксклюзивную границу, не последнюю строку данных.
+    series = load_daily_dynamics_csv(path)
+
+    assert len(series) == 58
+    assert str(series.index[0]) == "2026-06-23"
+    assert str(series.index[-1]) == "2026-08-19"
+    assert series.index.is_monotonic_increasing
+    assert series.index.is_unique
+    assert (series > 0).all()
+
+
+def test_daily_fixtures_train_window_is_balanced_by_weekday():
+    # Предрегистрация: train = первые TRAIN_WINDOW_DAYS (56) строк, должны
+    # покрывать ровно 8 полных недель, каждый день недели встречается 8 раз.
+    for path in DAILY_FIXTURES.values():
+        series = load_daily_dynamics_csv(path)
+        train = truncate_series(series, len(series) - TRAIN_WINDOW_DAYS)
+
+        assert len(train) == TRAIN_WINDOW_DAYS
+        assert str(train.index[0]) == "2026-06-23"
+        assert str(train.index[-1]) == "2026-08-17"
+
+        balance = check_weekday_balance(train)
+        assert balance["balanced"] is True
+        assert set(balance["counts_by_weekday"].values()) == {8}
+
+
+def test_daily_fixtures_holdout_is_two_days_not_three():
+    # docs/EXPERIMENT_VECTOR_D.md подчёркивает: holdout — то, что реально
+    # осталось после train (58 - 56 = 2), а не заранее посчитанное число (3),
+    # которого в данных нет.
+    for path in DAILY_FIXTURES.values():
+        series = load_daily_dynamics_csv(path)
+        holdout = series.iloc[TRAIN_WINDOW_DAYS:]
+
+        assert len(holdout) == 2
+        assert str(holdout.index[0]) == "2026-08-18"
+        assert str(holdout.index[-1]) == "2026-08-19"
+
+
+def test_fit_autoets_vector_daily_high_freq_has_no_seasonal_component():
+    """Ключевая находка второй итерации: у «купить телефон» AutoETS(sp=7) не
+    включает сезонную компоненту даже на полном train-окне — has_seasonal
+    должен быть False, а не "измеренный плоский профиль" (см. docs/EXPERIMENT_VECTOR_D.md,
+    вторая итерация, раздел 1/3).
     """
-    assert not any(path.exists() for path in DAILY_FIXTURES.values()), (
-        "Ожидалось, что дневные фикстуры ещё не собраны — если они уже появились, "
-        "этот тест и main_daily() пора запускать на реальных данных, а не проверять отказ"
+    series = load_daily_dynamics_csv(DAILY_FIXTURES["high_freq (купить телефон)"])
+    train = truncate_series(series, len(series) - TRAIN_WINDOW_DAYS)
+
+    vector = fit_autoets_vector(train, sp=7, calendar_anchor="weekday")
+
+    assert vector.has_seasonal is False
+    assert vector.to_dict()["seasonal"] is None
+
+
+def test_fit_autoets_vector_daily_seasonal_has_seasonal_component():
+    # Контраст с high_freq: «новогодние подарки» получает сезонный вектор.
+    series = load_daily_dynamics_csv(DAILY_FIXTURES["seasonal (новогодние подарки)"])
+    train = truncate_series(series, len(series) - TRAIN_WINDOW_DAYS)
+
+    vector = fit_autoets_vector(train, sp=7, calendar_anchor="weekday")
+
+    assert vector.has_seasonal is True
+    assert len(vector.to_dict()["seasonal"]) == 7
+
+
+def test_compare_vectors_marks_both_seasonal_false_when_either_vector_lacks_seasonality():
+    """Регрессия на NaN-баг: если хотя бы один из двух векторов не имеет
+    сезонной компоненты, seasonal_corr/seasonal_mae_rel_to_full_range должны
+    быть NaN и both_seasonal=False — а не тихо "проходить" пороги устойчивости
+    как false positive.
+    """
+    with_seasonal = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=True,
+        seasonal=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.7]),
+        model_spec="mul/None/mul",
+    )
+    without_seasonal = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=False,
+        seasonal=np.zeros(7),
+        model_spec="add/None/None",
     )
 
-    with pytest.raises(FileNotFoundError, match="Дневные фикстуры ещё не собраны"):
-        main_daily()
+    comparison = compare_vectors(with_seasonal, without_seasonal)
+
+    assert comparison["both_seasonal"] is False
+    assert np.isnan(comparison["seasonal_corr"])
+    assert np.isnan(comparison["seasonal_mae_rel_to_full_range"])

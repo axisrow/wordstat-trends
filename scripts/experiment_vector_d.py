@@ -62,15 +62,15 @@ FIXTURES = {
     "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_mid_freq.csv",
 }
 
-# Вторая итерация (sp=7, дневная грануляция) — предполагаемые имена файлов,
-# фикстуры собираются отдельно (см. docs/EXPERIMENT_VECTOR_D.md, вторая
-# итерация) и в репозитории на момент написания этого кода ещё отсутствуют.
+# Вторая итерация (sp=7, дневная грануляция) — фикстуры собраны сбором,
+# общим для всех параллельных воркеров одного эксперимента (не собирались
+# этим скриптом), см. docs/EXPERIMENT_VECTOR_D.md, вторая итерация.
 # main_daily() явно и понятно падает, если файла нет — не подставляет и не
 # синтезирует данные вместо него.
 DAILY_FIXTURES = {
-    "seasonal (новогодние подарки)": FIXTURES_DIR / "dynamics_daily_seasonal.csv",
-    "high_freq (купить телефон)": FIXTURES_DIR / "dynamics_daily_high_freq.csv",
-    "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_daily_mid_freq.csv",
+    "seasonal (новогодние подарки)": FIXTURES_DIR / "dynamics_daily_seasonal_mvp.csv",
+    "high_freq (купить телефон)": FIXTURES_DIR / "dynamics_daily_high_freq_mvp.csv",
+    "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_daily_mid_freq_mvp.csv",
 }
 
 # Предрегистрированные пороги устойчивости второй итерации (docs/EXPERIMENT_VECTOR_D.md):
@@ -80,6 +80,15 @@ DAILY_STABILITY_THRESHOLDS = {
     "max_level_diff_rel_abs": 0.2,
     "max_seasonal_mae_rel": 0.3,
 }
+
+# Train-окно второй итерации: 56 дней = 8 полных недель (пн→вс), кратно sp=7.
+# Собранные фикстуры дают 58 строк (23.06–19.08.2026) — конечная дата в
+# заголовке графика (20.08.2026) на день БОЛЬШЕ последней строки данных
+# (эксклюзивная граница), поэтому реальных строк 58, не 59. Train = первые
+# 56 строк (23.06–17.08.2026); holdout = ОСТАВШИЕСЯ строки после train,
+# считается как len(series) - TRAIN_WINDOW_DAYS, а не как фиксированное
+# число — на этих фикстурах это 2 дня (18–19.08), не 3.
+TRAIN_WINDOW_DAYS = 56
 
 RU_MONTHS = {
     "январь": 1,
@@ -167,6 +176,8 @@ def load_daily_dynamics_csv(path: Path) -> pd.Series:
     вторая итерация) в дневной pd.Series.
 
     Отличия от load_dynamics_csv (месячный парсер НЕ переиспользуется):
+    - Заголовок первой колонки — "Дата", НЕ "Период", как в месячной
+      выгрузке (проверено на живом прогоне wordstat-cli).
     - Период: "22.06.2026" — дата с точками DD.MM.YYYY, не русский месяц.
     - Заголовок графика (4-е поле CSV) содержит конечную дату диапазона,
       которая на день БОЛЬШЕ последней строки данных (эксклюзивная граница) —
@@ -178,7 +189,7 @@ def load_daily_dynamics_csv(path: Path) -> pd.Series:
     lines = _read_raw_csv_lines(path)
 
     header = lines[0].split(";")
-    assert header[0] == "Период", f"Неожиданный заголовок в {path}: {header}"
+    assert header[0] == "Дата", f"Неожиданный заголовок в {path}: {header}"
 
     records: list[tuple[pd.Period, float]] = []
     for line in lines[1:]:
@@ -213,17 +224,25 @@ def check_weekday_balance(series: pd.Series) -> dict:
 
 @dataclass
 class ParamVector:
-    """Вектор параметров модели: уровень, тренд, 12 сезонных коэффициентов.
+    """Вектор параметров модели: уровень, тренд, sp сезонных коэффициентов.
 
     has_trend=False означает, что AutoETS выбрал спецификацию БЕЗ трендовой
     компоненты (не что тренд измерен и равен нулю) — trend в этом случае 0.0
     по построению, а не по данным.
+
+    has_seasonal=False означает то же самое для сезонности: AutoETS выбрал
+    спецификацию БЕЗ сезонной компоненты — seasonal в этом случае [0.0]*sp
+    по построению (модель её не оценивала), а не "измеренный плоский
+    профиль". Различие существенно для метрик сравнения: корреляция и MAE
+    сезонного профиля не определены/бессмысленны, если хотя бы один из
+    сравниваемых векторов has_seasonal=False (см. to_dict).
     """
 
     level: float
     trend: float
     has_trend: bool
-    seasonal: np.ndarray  # длина 12, индекс 0 = январь
+    has_seasonal: bool
+    seasonal: np.ndarray  # длина sp, индекс 0 = январь (sp=12) или понедельник (sp=7)
     model_spec: str  # "error/trend/seasonal[/damped]", как выбрал AutoETS
 
     def to_dict(self) -> dict:
@@ -231,7 +250,8 @@ class ParamVector:
             "level": round(float(self.level), 6),
             "trend": round(float(self.trend), 6) if self.has_trend else None,
             "model_spec": self.model_spec,
-            "seasonal": [round(float(x), 6) for x in self.seasonal],
+            "has_seasonal": self.has_seasonal,
+            "seasonal": [round(float(x), 6) for x in self.seasonal] if self.has_seasonal else None,
         }
 
 
@@ -275,7 +295,8 @@ def fit_autoets_vector(
     level = float(last_state["level"])
     trend = float(last_state["trend"]) if has_trend else 0.0
 
-    if "seasonal" in states.columns and len(states) >= sp:
+    has_seasonal = "seasonal" in states.columns and len(states) >= sp
+    if has_seasonal:
         # statsmodels хранит ОДНО сезонное значение на строку (не sp столбцов) —
         # последние sp строк дают ровно один полный сезонный цикл, где строка
         # states.iloc[-1] соответствует последней точке ряда, states.iloc[-2] —
@@ -301,7 +322,12 @@ def fit_autoets_vector(
         calendar_seasonal[coord - 1] = value
 
     return ParamVector(
-        level=level, trend=trend, has_trend=has_trend, seasonal=calendar_seasonal, model_spec=model_spec
+        level=level,
+        trend=trend,
+        has_trend=has_trend,
+        has_seasonal=has_seasonal,
+        seasonal=calendar_seasonal,
+        model_spec=model_spec,
     )
 
 
@@ -360,23 +386,41 @@ def compare_seasonal_cycles_within_full_series(series: pd.Series, sp: int = 12) 
 def compare_vectors(full: ParamVector, other: ParamVector) -> dict:
     """Численно сравнить два вектора: абсолютная и относительная разница
     уровня/тренда, и по сезонному профилю — корреляция Пирсона + средняя
-    абсолютная разница (обе части сравниваются только там, где сезонность
-    заведомо непустая, т.е. по всем 12 календарным месяцам).
+    абсолютная разница.
+
+    both_seasonal=False означает, что хотя бы один из двух векторов не имеет
+    сезонной компоненты (has_seasonal=False у full или other) — в этом
+    случае seasonal_corr/seasonal_mae/seasonal_mae_rel_to_full_range
+    вычислены на нулевых заглушках и НЕ являются измерением сходства
+    профилей; поле both_seasonal должно проверяться явно перед тем, как
+    полагаться на эти значения (иначе NaN < порог тихо проходит как
+    "стабильно", хотя фактически сезонность не сравнивалась вовсе).
+
+    Внимание: MAE и относительный MAE сравнимы только если оба вектора
+    получены с одинаковой параметризацией (mul vs add) — сравнение
+    мультипликативных коэффициентов (в районе 1.0) с аддитивными сдвигами
+    (в единицах ряда) даёт формально исчисляемое, но содержательно
+    бессмысленное число. model_spec обоих векторов нужно проверять
+    отдельно; сравнение вслепую по этому полю не производится.
     """
     level_diff = other.level - full.level
     level_rel = level_diff / full.level if full.level != 0 else float("nan")
 
     trend_diff = other.trend - full.trend
 
-    seasonal_corr = float(np.corrcoef(full.seasonal, other.seasonal)[0, 1])
-    seasonal_mae = float(np.mean(np.abs(full.seasonal - other.seasonal)))
-    seasonal_full_range = float(full.seasonal.max() - full.seasonal.min())
-    seasonal_mae_rel = seasonal_mae / seasonal_full_range if seasonal_full_range != 0 else float("nan")
+    both_seasonal = full.has_seasonal and other.has_seasonal
+    seasonal_corr = float(np.corrcoef(full.seasonal, other.seasonal)[0, 1]) if both_seasonal else float("nan")
+    seasonal_mae = float(np.mean(np.abs(full.seasonal - other.seasonal))) if both_seasonal else float("nan")
+    seasonal_full_range = float(full.seasonal.max() - full.seasonal.min()) if both_seasonal else 0.0
+    seasonal_mae_rel = (
+        seasonal_mae / seasonal_full_range if both_seasonal and seasonal_full_range != 0 else float("nan")
+    )
 
     return {
         "level_diff_abs": round(float(level_diff), 6),
         "level_diff_rel": round(float(level_rel), 6),
         "trend_diff_abs": round(float(trend_diff), 6),
+        "both_seasonal": both_seasonal,
         "seasonal_corr": round(seasonal_corr, 6),
         "seasonal_mae": round(seasonal_mae, 6),
         "seasonal_mae_rel_to_full_range": round(seasonal_mae_rel, 6),
@@ -560,18 +604,32 @@ def main_daily() -> int:
         )
 
     thresholds = DAILY_STABILITY_THRESHOLDS
-    report: dict = {"fixtures": {}, "thresholds": thresholds}
+    report: dict = {"fixtures": {}, "thresholds": thresholds, "train_window_days": TRAIN_WINDOW_DAYS}
     full_vectors: dict[str, ParamVector] = {}
     any_not_measurable = False
     any_unstable = False
+    any_no_seasonal_component = False
 
     for label, path in DAILY_FIXTURES.items():
-        series = load_daily_dynamics_csv(path)
+        full_series = load_daily_dynamics_csv(path)
+
+        if len(full_series) < TRAIN_WINDOW_DAYS:
+            raise ValueError(
+                f"Окно '{label}' короче train-окна: {len(full_series)} строк < "
+                f"{TRAIN_WINDOW_DAYS} требуемых. Не достраиваю синтетикой."
+            )
+
+        # Train — первые TRAIN_WINDOW_DAYS строк (23.06–17.08, 8 полных недель).
+        # Holdout — ВСЁ, что осталось после train (не фиксированное число: на
+        # собранных фикстурах это 2 дня, 18–19.08, не 3 — фактическая длина
+        # ряда минус train, а не 58 - 56 посчитанное заранее).
+        series = truncate_series(full_series, len(full_series) - TRAIN_WINDOW_DAYS)
+        holdout = full_series.iloc[TRAIN_WINDOW_DAYS:]
 
         weekday_balance = check_weekday_balance(series)
         if not weekday_balance["balanced"]:
             raise ValueError(
-                f"Окно '{label}' не сбалансировано по дням недели "
+                f"Train-окно '{label}' не сбалансировано по дням недели "
                 f"(нужно ровно 8 на каждый день): {weekday_balance['counts_by_weekday']}"
             )
 
@@ -580,8 +638,22 @@ def main_daily() -> int:
 
         stability = run_stability_check(series, label, full_vector, drops=(7, 14), sp=7, calendar_anchor="weekday")
         stability["weekday_balance"] = weekday_balance
+        stability["holdout"] = {
+            "n_points": len(holdout),
+            "dates": [str(p) for p in holdout.index],
+            "note": "Не используется для фита — контроль вне обучающего окна, не входит в проверку устойчивости.",
+        }
         stability["statsforecast_cross_check"] = {
             f"drop_{drop}": check_statsforecast_model_choice(truncate_series(series, drop), sp=7)
+            for drop in (0, 7, 14)
+        }
+        # Кросс-проверка выбора критерия (докажено в первой итерации: AIC vs
+        # AICc сами по себе меняют, видит ли sktime сезонность) — вызвано с
+        # тем же information_criterion="aicc", что дефолт statsforecast, на
+        # train-окне и обоих рефитах, чтобы отделить "разные критерии" от
+        # "разные реализации" в статистике раздела 3 второй итерации.
+        stability["sktime_aicc_cross_check"] = {
+            f"drop_{drop}": check_sktime_model_choice(truncate_series(series, drop), sp=7, information_criterion="aicc")
             for drop in (0, 7, 14)
         }
         report["fixtures"][label] = stability
@@ -592,15 +664,27 @@ def main_daily() -> int:
                 any_not_measurable = True
                 continue
             comparison = entry["comparison_vs_full"]
-            if (
-                comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]
-                or abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"]
-                or comparison["seasonal_mae_rel_to_full_range"] > thresholds["max_seasonal_mae_rel"]
+            if not comparison["both_seasonal"]:
+                # Хотя бы один из двух векторов не имеет сезонной компоненты —
+                # seasonal_corr/seasonal_mae_rel НЕ измерены (NaN), сравнение
+                # неприменимо. НЕ считается автоматически "стабильно": лишь
+                # уровень (level_diff_rel), который определён всегда, ещё может
+                # триггернуть стоп-условие ниже; отдельно помечаем сам факт
+                # отсутствия сезонности для честного отчёта, не подмешивая его
+                # в any_unstable по NaN-полям.
+                any_no_seasonal_component = True
+            if abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"] or (
+                comparison["both_seasonal"]
+                and (
+                    comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]
+                    or comparison["seasonal_mae_rel_to_full_range"] > thresholds["max_seasonal_mae_rel"]
+                )
             ):
                 any_unstable = True
 
     report["stability_not_measurable"] = any_not_measurable
     report["stability_unstable"] = any_unstable
+    report["stability_no_seasonal_component_somewhere"] = any_no_seasonal_component
     stop_condition_triggered = any_not_measurable or any_unstable
     report["stability_stop_condition_triggered"] = stop_condition_triggered
 
