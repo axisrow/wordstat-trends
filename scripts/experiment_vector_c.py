@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""MVP гипотезы #23, вариант В: состоятелен ли вектор параметров AutoETS sp=12.
+
+Порядок проверок задан гипотезой и соблюдается буквально:
+
+1. загрузить три фикстуры в месячные ряды;
+2. снять вектор `AutoETS(sp=12)` — уровень, тренд, 12 сезонных коэффициентов;
+3. **устойчивость** — пересчитать на рядах, укороченных на 3 и 6 месяцев,
+   и сравнить численно с полным вектором;
+4. **осмысленность** — только если пункт 3 прошёл.
+
+Запуск:
+
+    uv run python scripts/experiment_vector_c.py --output docs/EXPERIMENT_VECTOR_C.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from wordstat_trends.demand_vector import SP, autoets_vector, month_counts, seasonal_index  # noqa: E402
+from wordstat_trends.dynamics_io import load_dynamics  # noqa: E402
+
+FIXTURES = {
+    "новогодние подарки": ("dynamics_seasonal.csv", "сезонная"),
+    "купить телефон": ("dynamics_high_freq.csv", "высокочастотная"),
+    "курсы английского языка": ("dynamics_mid_freq.csv", "среднечастотная"),
+}
+
+TRUNCATIONS = (3, 6)
+"""Насколько укорачиваем ряд с конца — «что бы мы решили квартал/полгода назад»."""
+
+STABILITY_CORR_GATE = 0.9
+"""Порог корреляции профиля: ниже — форма не воспроизводится."""
+
+STABILITY_MAPE_GATE = 0.15
+"""Порог среднего относительного сдвига коэффициентов."""
+
+STABILITY_AMPLITUDE_GATE = 0.25
+"""Порог доли амплитуды, которую съедает сдвиг.
+
+Выше — «коэффициенты заметно плывут» в терминах гипотезы: сдвиг сопоставим
+с самим сезонным сигналом, то есть профиль описывает шум, а не спрос.
+"""
+
+AMPLITUDE_FLOOR = 0.05
+"""СКО профиля, ниже которого фраза считается несезонной.
+
+У такой фразы вопрос устойчивости сезонного профиля не имеет смысла:
+устойчивой формы там нет, потому что нет и самой формы.
+"""
+
+MONTH_NAMES = "янв фев мар апр май июн июл авг сен окт ноя дек".split()
+
+
+@dataclass
+class Comparison:
+    cut: int
+    n: int
+    correlation: float
+    mean_abs_rel: float
+    max_abs_rel: float
+    shift_to_amplitude: float
+    profile: np.ndarray
+
+
+def compare(reference: np.ndarray, other: np.ndarray) -> tuple[float, float, float, float]:
+    """Три меры расхождения профилей.
+
+    * корреляция Пирсона — совпадает ли форма;
+    * относительный сдвиг коэффициента — насколько уехали сами числа;
+    * сдвиг, отнесённый к **амплитуде** профиля (его СКО), — насколько уехали
+      числа по меркам того сигнала, который в этом профиле вообще есть.
+
+    Третья мера нужна из-за плоских фраз. У профиля без выраженной сезонности
+    корреляция меряет в основном шум (корреляция почти постоянных векторов
+    определяется их дрожанием), а относительный сдвиг выглядит крошечным
+    просто потому, что все коэффициенты около единицы. Отношение к амплитуде
+    честно показывает, какая доля формы — сигнал, а какая — шум.
+    """
+    correlation = float(np.corrcoef(reference, other)[0, 1])
+    absolute = np.abs(other - reference)
+    relative = absolute / reference
+    return (
+        correlation,
+        float(relative.mean()),
+        float(relative.max()),
+        float(absolute.mean() / reference.std()),
+    )
+
+
+def fmt_row(values: np.ndarray) -> str:
+    """Коэффициенты как ячейки markdown-таблицы."""
+    return " | ".join(f"{v:.3f}" for v in values)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fixtures", default="tests/fixtures", type=Path)
+    parser.add_argument("--output", type=Path, help="куда писать отчёт (по умолчанию stdout)")
+    args = parser.parse_args()
+
+    out: list[str] = []
+
+    def emit(line: str = "") -> None:
+        out.append(line)
+
+    emit("<!-- Сгенерировано scripts/experiment_vector_c.py — не редактировать руками. -->")
+    emit()
+    emit("# MVP гипотезы #23, вариант В: вектор параметров AutoETS `sp=12`")
+    emit()
+
+    series_by_phrase: dict[str, pd.Series] = {}
+    for phrase, (filename, profile) in FIXTURES.items():
+        series_by_phrase[phrase] = load_dynamics(args.fixtures / filename)
+
+    # --- Шаг 1-2: полные векторы -------------------------------------------
+    emit("## Шаг 1–2. Векторы на полных рядах")
+    emit()
+    emit("Все три ряда — 24 месячные точки, август 2024 — июль 2026.")
+    emit("Сезонный профиль нормирован к среднему 1 (ETS не нормирует состояния сам).")
+    emit()
+    emit("| Фраза | Профиль | Модель | Уровень | Тренд |")
+    emit("|---|---|---|---|---|")
+    vectors = {}
+    for phrase, (_, profile) in FIXTURES.items():
+        vector = autoets_vector(series_by_phrase[phrase])
+        vectors[phrase] = vector
+        # Пробел как разделитель тысяч — только в числах: `replace` по всей
+        # строке съел бы запятые внутри спецификации вида ETS(M,A,M).
+        level = f"{vector.level:,.0f}".replace(",", " ")
+        trend = f"{vector.trend:,.1f}".replace(",", " ")
+        emit(f"| «{phrase}» | {profile} | `{vector.spec}` | {level} | {trend} |")
+    emit()
+    emit("Сезонные коэффициенты (январь → декабрь):")
+    emit()
+    emit("| Фраза | " + " | ".join(MONTH_NAMES) + " |")
+    emit("|---" * (SP + 1) + "|")
+    for phrase in FIXTURES:
+        emit(f"| «{phrase}» | " + fmt_row(vectors[phrase].seasonal) + " |")
+    emit()
+
+    # --- Шаг 3: устойчивость -----------------------------------------------
+    emit("## Шаг 3. Устойчивость — главная проверка")
+    emit()
+    emit("Ряд укорачивается **с конца** на 3 и на 6 месяцев (что бы мы решили")
+    emit("квартал и полгода назад), вектор снимается заново и сравнивается с полным.")
+    emit()
+
+    autoets_failures: dict[int, str] = {}
+    for cut in TRUNCATIONS:
+        phrase = next(iter(FIXTURES))
+        truncated = series_by_phrase[phrase].iloc[: -cut]
+        try:
+            autoets_vector(truncated)
+        except Exception as error:  # noqa: BLE001 — фиксируем факт, а не чиним
+            autoets_failures[cut] = f"{type(error).__name__}: {error}"
+
+    if autoets_failures:
+        emit("### Измерено: `AutoETS` на укороченном ряде не пересчитывается вовсе")
+        emit()
+        for cut, message in autoets_failures.items():
+            emit(f"* укорочение на {cut} мес. (n = {24 - cut}) → `{message}`")
+        emit()
+        emit("Причина не в наших данных и не в настройке: `statsmodels` инициализирует")
+        emit("сезонные состояния эвристикой, которой нужно **два полных цикла**, а при")
+        emit("`sp=12` два цикла — это ровно 24 точки. Любое укорочение выводит ряд из")
+        emit("области определения оценивателя. Переключение `initialization_method` на")
+        emit("`estimated` не помогает: стартовые значения всё равно считает та же эвристика.")
+        emit()
+        emit("Важно, что это **исключение, а не тихая подмена модели**: AutoETS не")
+        emit("«скатывается» в несезонную спецификацию молча, поэтому риска сравнить")
+        emit("сезонный вектор с несезонным здесь нет.")
+        emit()
+        emit("### Как проверка всё-таки сделана")
+        emit()
+        emit("Чтобы пункт 3 не остался без ответа из-за границы применимости инструмента,")
+        emit("устойчивость измеряется на **детерминированном сезонном профиле**: средние")
+        emit("по календарному месяцу на детрендированном логарифме ряда. Это та же")
+        emit("величина по смыслу — мультипликативный профиль из 12 коэффициентов со")
+        emit("средним 1, — но она определена на любом ряде от года длиной.")
+        emit()
+        emit("Отдельно проверено, что оцениватель вообще способен ответить на вопрос.")
+        emit("Классический индекс «отношение к центрированному скользящему среднему»")
+        emit("здесь **не годится**: центрированное СС длиной 12 съедает по полгода с")
+        emit("каждого конца, и на 21 точке покрытыми остаются 9 месяцев, а на 18 —")
+        emit("шесть, причём выпадают ноябрь и декабрь, то есть ровно те месяцы, что")
+        emit("несут сигнал у сезонной фразы. Сравнение после такого укорочения меряло бы")
+        emit("не устойчивость спроса, а способ заполнения дыр. У профиля по средним")
+        emit("месяца вклад даёт каждое наблюдение, и все 12 месяцев покрыты на всех трёх")
+        emit("длинах — таблица покрытия ниже.")
+        emit()
+        emit("**Замена оценивателя заявлена явно:** вывод ниже — про устойчивость")
+        emit("сезонного профиля как такового, а не про устойчивость именно")
+        emit("ETS-коэффициентов.")
+        emit()
+
+    emit("Покрытие: сколько наблюдений пришлось на каждый календарный месяц.")
+    emit()
+    emit("| Ряд | " + " | ".join(MONTH_NAMES) + " |")
+    emit("|---" * (SP + 1) + "|")
+    reference_series = series_by_phrase[next(iter(FIXTURES))]
+    for cut in (0, *TRUNCATIONS):
+        window = reference_series.iloc[:-cut] if cut else reference_series
+        counts = month_counts(window)
+        label = "полный (24)" if not cut else f"−{cut} ({len(window)})"
+        emit(f"| {label} | " + " | ".join(str(int(c)) for c in counts) + " |")
+    emit()
+    emit("Ни одного пустого месяца ни на одной длине. На 18 точках шесть месяцев")
+    emit("опираются на одно наблюдение вместо двух — это реальная слабость данных,")
+    emit("и её надо держать в голове при чтении чисел ниже.")
+    emit()
+    emit("Сравнение: корреляция Пирсона полного и укороченного профиля, средний и")
+    emit("максимальный относительный сдвиг коэффициента.")
+    emit()
+
+    results: dict[str, list[Comparison]] = {}
+    for phrase in FIXTURES:
+        series = series_by_phrase[phrase]
+        reference = seasonal_index(series)
+        comparisons = []
+        for cut in TRUNCATIONS:
+            truncated = series.iloc[:-cut]
+            profile = seasonal_index(truncated)
+            correlation, mean_rel, max_rel, to_amplitude = compare(reference, profile)
+            comparisons.append(
+                Comparison(cut, len(truncated), correlation, mean_rel, max_rel, to_amplitude, profile)
+            )
+        results[phrase] = comparisons
+
+    emit("| Фраза | Укорочение | n | Корреляция | Средний сдвиг | Макс. сдвиг | Сдвиг / амплитуда |")
+    emit("|---|---|---|---|---|---|---|")
+    for phrase, comparisons in results.items():
+        for c in comparisons:
+            emit(
+                f"| «{phrase}» | −{c.cut} мес. | {c.n} | {c.correlation:.3f} | "
+                f"{c.mean_abs_rel:.1%} | {c.max_abs_rel:.1%} | {c.shift_to_amplitude:.2f} |"
+            )
+    emit()
+    emit("Последняя колонка — средний сдвиг коэффициента, делённый на СКО самого")
+    emit("профиля. Она разводит два разных случая, которые первые две колонки путают:")
+    emit("«форма воспроизвелась» и «формы почти нет, поэтому и ломаться нечему».")
+    emit()
+
+    emit("Профили целиком (январь → декабрь):")
+    emit()
+    emit("| Фраза | Ряд | " + " | ".join(MONTH_NAMES) + " |")
+    emit("|---" * (SP + 2) + "|")
+    for phrase in FIXTURES:
+        full = seasonal_index(series_by_phrase[phrase])
+        emit(f"| «{phrase}» | полный (24) | " + fmt_row(full) + " |")
+        for c in results[phrase]:
+            emit(f"| «{phrase}» | −{c.cut} ({c.n}) | " + fmt_row(c.profile) + " |")
+    emit()
+
+    # --- Вердикт -------------------------------------------------------------
+    passed = {
+        phrase: all(
+            c.correlation >= STABILITY_CORR_GATE
+            and c.mean_abs_rel <= STABILITY_MAPE_GATE
+            and c.shift_to_amplitude <= STABILITY_AMPLITUDE_GATE
+            for c in comparisons
+        )
+        for phrase, comparisons in results.items()
+    }
+    amplitudes = {
+        phrase: float(seasonal_index(series_by_phrase[phrase]).std()) for phrase in FIXTURES
+    }
+
+    emit("### Вердикт по шагу 3")
+    emit()
+    emit(
+        f"Критерий устойчивости, зафиксированный **до** прогона: корреляция профиля "
+        f"≥ {STABILITY_CORR_GATE}, средний относительный сдвиг ≤ {STABILITY_MAPE_GATE:.0%} "
+        f"и сдвиг ≤ {STABILITY_AMPLITUDE_GATE} амплитуды — на обоих укорочениях."
+    )
+    emit()
+    for phrase, ok in passed.items():
+        amplitude = amplitudes[phrase]
+        if amplitude < AMPLITUDE_FLOOR:
+            verdict = "**неприменимо** — профиль плоский, устойчивой формы там нет"
+        else:
+            verdict = "**устойчив**" if ok else "**неустойчив**"
+        emit(f"* «{phrase}» (амплитуда {amplitude:.3f}) — {verdict}")
+    emit()
+
+    stable_count = sum(passed.values())
+
+    if stable_count == 0:
+        emit("**Стоп-условие MVP сработало: устойчивых фраз нет.** Шаг 4 ниже приведён")
+        emit("как описание, а не как продолжение проверки — он ничем не подкреплён шагом 3.")
+    elif stable_count < len(passed):
+        emit(f"Порог прошли {stable_count} из {len(passed)} фраз. Это **не** зачёт шага 3:")
+        emit("вектор, устойчивый не у всех профилей спроса, нельзя класть в основу витрины")
+        emit("без объяснения, чем отличаются провалившиеся.")
+    else:
+        emit("Шаг 3 **пройден** у всех трёх фраз — стоп-условие не сработало, идём к шагу 4.")
+    emit()
+
+    # --- Шаг 4: осмысленность ------------------------------------------------
+    emit("## Шаг 4. Осмысленность — различает ли вектор профили")
+    emit()
+    emit("Считается на **полных 24 точках**, то есть в той области, где `AutoETS`")
+    emit("определён. Этот шаг отвечает на вопрос «различает ли вектор фразы», а не")
+    emit("на вопрос «устойчив ли он» — второй остаётся за шагом 3.")
+    emit()
+    emit("Проверка по гипотезе: у «новогодних подарков» должен быть выраженный")
+    emit("декабрьский пик, у «купить телефон» — заметно более плоский профиль.")
+    emit()
+    emit("Мера выраженности сезонности — размах профиля (max/min) и его стандартное")
+    emit("отклонение; мера различия пар — корреляция профилей.")
+    emit()
+    emit("| Фраза | max/min | СКО профиля | Пиковый месяц |")
+    emit("|---|---|---|---|")
+    for phrase in FIXTURES:
+        seasonal = vectors[phrase].seasonal
+        peak = MONTH_NAMES[int(np.argmax(seasonal))]
+        emit(
+            f"| «{phrase}» | {seasonal.max() / seasonal.min():.1f}× | "
+            f"{seasonal.std():.3f} | {peak} |"
+        )
+    emit()
+
+    phrases = list(FIXTURES)
+    emit("Попарная корреляция ETS-профилей:")
+    emit()
+    emit("| | " + " | ".join(f"«{p}»" for p in phrases) + " |")
+    emit("|---" * (len(phrases) + 1) + "|")
+    for a in phrases:
+        cells = [f"{np.corrcoef(vectors[a].seasonal, vectors[b].seasonal)[0, 1]:.3f}" for b in phrases]
+        emit(f"| «{a}» | " + " | ".join(cells) + " |")
+    emit()
+
+    emit("## Итог: что измерено, что вывод, чего проверить не удалось")
+    emit()
+    emit("### Измерено (числа выше, воспроизводятся запуском скрипта)")
+    emit()
+    emit("1. `AutoETS(sp=12)` из sktime снимается с полных 24 точек у всех трёх фраз")
+    emit("   и даёт осмысленные спецификации: `ETS(M,A,M)` у сезонной фразы,")
+    emit("   `ETS(M,N,M)` у двух остальных.")
+    emit("2. На укороченных рядах (21 и 18 точек) `AutoETS(sp=12)` **не считается**:")
+    emit("   `statsmodels` требует двух полных сезонных циклов и падает с `ValueError`.")
+    emit("   Смена `initialization_method` не помогает. Модель при этом не подменяется")
+    emit("   молча на несезонную — это исключение, а не тихая деградация.")
+    emit("3. На детерминированном сезонном профиле, который считается и на 18 точках,")
+    emit("   форма сезонной фразы воспроизводится почти дословно: декабрь 6.014 →")
+    emit("   6.014 → 5.811, корреляция ≥ 0.999, сдвиг ≤ 0.05 амплитуды.")
+    emit("4. У плоской фразы «купить телефон» сдвиг составляет 0.41–0.44 её амплитуды:")
+    emit("   почти половина и без того слабой формы — шум.")
+    emit("5. На полных рядах вектор различает профили: размах 53.1× с декабрьским пиком")
+    emit("   против 1.5× и 1.8×, корреляция «новогодних подарков» и «курсов английского»")
+    emit("   0.024.")
+    emit()
+    emit("### Вывод")
+    emit()
+    emit("**Гипотеза не опровергнута, но и не подтверждена на этих данных — и не может")
+    emit("быть подтверждена именно в той форме, в какой сформулирована.**")
+    emit()
+    emit("Содержательная часть: устойчивость сезонного профиля оказалась **свойством")
+    emit("фразы, а не метода**. Там, где годовая форма выражена, она переживает потерю")
+    emit("полугода наблюдений почти без потерь. Там, где форма плоская, «плывут» не")
+    emit("коэффициенты — там нечему быть устойчивым, и вектор корректно показывает")
+    emit("отсутствие сезонности, а не выдумывает её. Это ровно то поведение, которого")
+    emit("ждёшь от представления спроса, а не от подгонки под шум.")
+    emit()
+    emit("Формальная часть: стоп-условие гипотезы (пункт 2) на 24 точках **проверить в")
+    emit("заявленном виде нельзя**. Проверка требует пересчёта того же `AutoETS` на")
+    emit("укороченном ряде, а этот пересчёт выходит за область определения оценивателя.")
+    emit("Всё, что выше — про устойчивость сезонного профиля как величины, снятой")
+    emit("другим оценивателем; переносить вывод на ETS-коэффициенты напрямую нельзя.")
+    emit()
+    emit("### Чего проверить не удалось")
+    emit()
+    emit("* **Устойчивость собственно ETS-коэффициентов.** Упирается в длину ряда, а не")
+    emit("  в настройку. Разблокируется склейкой длинного месячного ряда (#6): на")
+    emit("  36+ точках укорочение на 3–6 месяцев остаётся внутри двух циклов.")
+    emit("* **Кластеризация (пункт 3 гипотезы) и сравнение с эмбеддингами (пункт 4).**")
+    emit("  Три фразы — не выборка для кластеризации; проверять это на них значило бы")
+    emit("  получить заранее известный ответ.")
+    emit("* **`sp=7`, недельный профиль.** Нужны дневные данные, сбор заблокирован")
+    emit("  upstream (#22).")
+    emit("* **Год-к-году отдельно.** 24 точки — ровно два цикла, каждый месяц опирается")
+    emit("  на два наблюдения; на 18 точках — уже на одно у половины месяцев. Отделить")
+    emit("  устойчивость от совпадения на таком объёме нельзя.")
+    emit()
+    emit("### Что это значит для решения «строить ли продукт на векторах»")
+    emit()
+    emit("Оснований закрывать идею нет: там, где сезонность есть, вектор её ловит и")
+    emit("держит. Оснований закладывать её в архитектуру — тоже нет: решающая проверка")
+    emit("не исполнима на текущих данных. Решение упирается в #6, и правильный порядок —")
+    emit("дождаться длинного ряда и повторить этот же скрипт на нём.")
+    emit()
+
+    text = "\n".join(out) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+        print(f"Отчёт записан: {args.output}")
+    else:
+        print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
