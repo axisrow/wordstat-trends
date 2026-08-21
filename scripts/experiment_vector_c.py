@@ -158,7 +158,7 @@ def main() -> int:
     # Замеряем на всех трёх фразах, а не на одной: отчёт утверждает факт про
     # AutoETS вообще, и стоит он дёшево — исключение бросается на
     # инициализации, до оптимизации.
-    autoets_failures: dict[int, str] = {}
+    autoets_failures: dict[tuple[str, int], str] = {}
     autoets_survivors: list[str] = []
     for cut in TRUNCATIONS:
         for phrase in FIXTURES:
@@ -166,21 +166,29 @@ def main() -> int:
             try:
                 autoets_vector(truncated)
             except Exception as error:  # noqa: BLE001 — фиксируем факт, а не чиним
-                autoets_failures[cut] = f"{type(error).__name__}: {error}"
+                # Ключ включает фразу: иначе прогоны затирали бы друг друга, и
+                # утверждение «сообщение везде одно» осталось бы непроверенным.
+                autoets_failures[(phrase, cut)] = f"{type(error).__name__}: {error}"
             else:
                 autoets_survivors.append(f"«{phrase}», −{cut} мес.")
 
     if autoets_failures:
         emit("### Измерено: `AutoETS` на укороченном ряде не пересчитывается вовсе")
         emit()
-        emit(f"Проверено на всех {len(FIXTURES)} фразах и обоих укорочениях.")
+        checked = len(FIXTURES) * len(TRUNCATIONS)
+        emit(f"Проверено {checked} прогонов: {len(FIXTURES)} фразы × {len(TRUNCATIONS)} укорочения.")
         if autoets_survivors:
-            emit(f"Исключения не бросили: {', '.join(autoets_survivors)}.")
+            emit(f"Исключение не бросили: {', '.join(autoets_survivors)}.")
+        distinct = sorted(set(autoets_failures.values()))
+        if len(distinct) == 1 and not autoets_survivors:
+            emit("Упали все, и сообщение у всех дословно одно (сверено, а не предположено):")
+            emit()
+            emit(f"* n = {', '.join(str(24 - cut) for cut in TRUNCATIONS)} → `{distinct[0]}`")
         else:
-            emit("Ни один из прогонов не дошёл до результата — сообщение везде одно:")
-        emit()
-        for cut, message in autoets_failures.items():
-            emit(f"* укорочение на {cut} мес. (n = {24 - cut}) → `{message}`")
+            emit("Сообщения по прогонам:")
+            emit()
+            for (phrase, cut), message in autoets_failures.items():
+                emit(f"* «{phrase}», укорочение на {cut} мес. (n = {24 - cut}) → `{message}`")
         emit()
         emit("Причина не в наших данных и не в настройке: `statsmodels` инициализирует")
         emit("сезонные состояния эвристикой, которой нужно **два полных цикла**, а при")

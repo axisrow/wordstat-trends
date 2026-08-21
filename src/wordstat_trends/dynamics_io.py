@@ -31,6 +31,7 @@ MONTHS: dict[str, int] = {
     )
 }
 
+_PERIOD_COLUMN = "Период"
 _QUERIES_COLUMN = "Число запросов"
 
 
@@ -70,7 +71,11 @@ def load_dynamics(path: str | Path) -> pd.Series:
         raise ValueError(f"Пустой файл: {path}")
 
     header = rows[0]
-    if len(header) < 2 or header[1].strip() != _QUERIES_COLUMN:
+    # Проверять только вторую колонку недостаточно: у представления `regions`
+    # она называется точно так же («Регион;Число запросов;…», см. docs/DATA.md).
+    # Различает представления именно первая колонка, и без неё regions-файл
+    # проходил бы проверку, падая позже с невнятным «Не период Вордстата».
+    if len(header) < 2 or header[0].strip() != _PERIOD_COLUMN or header[1].strip() != _QUERIES_COLUMN:
         raise ValueError(f"Неожиданный заголовок dynamics: {header[:2]}")
 
     records: list[tuple[pd.Period, int]] = []
@@ -78,6 +83,10 @@ def load_dynamics(path: str | Path) -> pd.Series:
         # Четвёртое поле пустое во всех строках данных — это не битая строка.
         if not row or not row[0].strip():
             continue
+        if len(row) < 2:
+            # Иначе строка без разделителя падала бы голым IndexError — в этом
+            # модуле все остальные поломки формата сообщают о себе ValueError.
+            raise ValueError(f"В строке меньше двух полей: {row!r}")
         records.append((_parse_period(row[0].strip()), _parse_count(row[1])))
 
     if not records:
