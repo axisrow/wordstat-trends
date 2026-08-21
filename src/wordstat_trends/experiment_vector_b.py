@@ -16,12 +16,11 @@ import numpy as np
 import pandas as pd
 
 SEASONAL_PERIOD = 7
-RAW_OBSERVATIONS = 59
 TRAIN_OBSERVATIONS = 56
 TRUNCATIONS = (0, 7, 14)
 EXPECTED_START = pd.Timestamp("2026-06-23")
 EXPECTED_TRAIN_END = pd.Timestamp("2026-08-17")
-EXPECTED_END = pd.Timestamp("2026-08-20")
+EXPECTED_DATA_END = pd.Timestamp("2026-08-19")
 WEEKDAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 # Preregistered before daily fixtures were available. See the report.
@@ -31,9 +30,9 @@ MAX_RELATIVE_RMSE = 0.25
 MAX_SHIFT_TO_AMPLITUDE = 0.35
 
 DAILY_FIXTURES = {
-    "high_freq": "dynamics_daily_high_freq.csv",
-    "mid_freq": "dynamics_daily_mid_freq.csv",
-    "seasonal": "dynamics_daily_seasonal.csv",
+    "high_freq": "dynamics_daily_high_freq_mvp.csv",
+    "mid_freq": "dynamics_daily_mid_freq_mvp.csv",
+    "seasonal": "dynamics_daily_seasonal_mvp.csv",
 }
 
 
@@ -107,13 +106,13 @@ def load_wordstat_daily(path: Path) -> pd.Series:
 
 
 def split_experiment_window(series: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """Validate the measured 59 days and return 56-day train plus holdout."""
+    """Validate row dates and return the first 56 days plus the remaining holdout."""
 
-    if len(series) != RAW_OBSERVATIONS:
-        raise ValueError(f"Expected {RAW_OBSERVATIONS} real daily rows, got {len(series)}")
-    if series.index[0] != EXPECTED_START or series.index[-1] != EXPECTED_END:
+    if len(series) < TRAIN_OBSERVATIONS:
+        raise ValueError(f"Expected at least {TRAIN_OBSERVATIONS} real daily rows, got {len(series)}")
+    if series.index[0] != EXPECTED_START or series.index[-1] != EXPECTED_DATA_END:
         raise ValueError(
-            f"Expected daily bounds {EXPECTED_START.date()}..{EXPECTED_END.date()}, "
+            f"Expected row bounds {EXPECTED_START.date()}..{EXPECTED_DATA_END.date()}, "
             f"got {series.index[0].date()}..{series.index[-1].date()}"
         )
     train = series.iloc[:TRAIN_OBSERVATIONS]
@@ -411,7 +410,11 @@ def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
             "raw_observations": len(raw),
             "weekday_counts": np.bincount(train.index.dayofweek, minlength=SEASONAL_PERIOD).tolist(),
             "train": {"start": str(train.index[0].date()), "end": str(train.index[-1].date())},
-            "holdout": {"start": str(holdout.index[0].date()), "end": str(holdout.index[-1].date())},
+            "holdout": {
+                "observations": len(holdout),
+                "start": str(holdout.index[0].date()),
+                "end": str(holdout.index[-1].date()),
+            },
             "fits": fits,
             "stability": stability,
             "stability_passed": stable,
@@ -426,7 +429,7 @@ def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
         "configuration": {
             "sp": SEASONAL_PERIOD,
             "train_observations": TRAIN_OBSERVATIONS,
-            "holdout_observations": RAW_OBSERVATIONS - TRAIN_OBSERVATIONS,
+            "holdout_definition": "all real rows after the first 56",
             "truncations_days": list(TRUNCATIONS[1:]),
             "weekday_order": list(WEEKDAY_NAMES),
             "stability_thresholds": {

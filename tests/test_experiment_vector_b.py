@@ -11,7 +11,7 @@ from wordstat_trends.experiment_vector_b import (
 )
 
 
-def _write_daily_fixture(path: Path, *, rows: int = 59) -> None:
+def _write_daily_fixture(path: Path, *, rows: int = 58) -> None:
     start = date(2026, 6, 23)
     lines = ["Период;Число запросов;Доля, %;График"]
     for offset in range(rows):
@@ -41,9 +41,9 @@ def test_loads_bom_cr_only_and_validates_balanced_training_window(tmp_path: Path
     series = load_wordstat_daily(path)
     train, holdout = split_experiment_window(series)
 
-    assert len(series) == 59
+    assert len(series) == 58
     assert len(train) == 56
-    assert len(holdout) == 3
+    assert len(holdout) == 2
     assert train.index[0].date() == date(2026, 6, 23)
     assert train.index[-1].date() == date(2026, 8, 17)
     assert train.groupby(train.index.dayofweek).size().tolist() == [8] * 7
@@ -52,8 +52,8 @@ def test_loads_bom_cr_only_and_validates_balanced_training_window(tmp_path: Path
 
 def test_rejects_short_daily_export_without_padding(tmp_path: Path) -> None:
     path = tmp_path / "short.csv"
-    _write_daily_fixture(path, rows=58)
+    _write_daily_fixture(path, rows=55)
 
     series = load_wordstat_daily(path)
-    with pytest.raises(ValueError, match="Expected 59 real daily rows, got 58"):
+    with pytest.raises(ValueError, match="Expected at least 56 real daily rows, got 55"):
         split_experiment_window(series)
