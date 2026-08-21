@@ -73,6 +73,17 @@ DAILY_FIXTURES = {
     "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_daily_mid_freq_mvp.csv",
 }
 
+# Пороги устойчивости первой итерации (sp=12, месячные, main()) — объявлены
+# в первом прогоне этого варианта MVP, независимо от второй итерации.
+# НАМЕРЕННО отличаются от DAILY_STABILITY_THRESHOLDS ниже (0.5 vs 0.7 для
+# корреляции, нет отдельного порога MAE/размах) — это два самостоятельных
+# набора критериев для двух самостоятельных предрегистраций, не забытое
+# переиспользование одной константы.
+MONTHLY_STABILITY_THRESHOLDS = {
+    "min_seasonal_corr": 0.5,
+    "max_level_diff_rel_abs": 0.2,
+}
+
 # Предрегистрированные пороги устойчивости второй итерации (docs/EXPERIMENT_VECTOR_D.md):
 # объявлены ДО прогона на реальных данных, не корректируются по результату.
 DAILY_STABILITY_THRESHOLDS = {
@@ -505,7 +516,12 @@ def check_sktime_model_choice(series: pd.Series, sp: int = 12, information_crite
     forecaster.fit(y)
     fitted = forecaster._fitted_forecaster  # type: ignore[attr-defined]
     model = fitted.model
-    has_seasonal = model.seasonal is not None
+    # Та же проверка, что в fit_autoets_vector (states.columns + длина) —
+    # не model.seasonal is not None: это два формально разных вопроса
+    # («что запросили при фите» против «можно ли извлечь sp значений
+    # сезонных states»), которые могут в принципе разойтись; здесь важно
+    # именно извлекаемое состояние, а не сама спецификация.
+    has_seasonal = "seasonal" in fitted.states.columns and len(fitted.states) >= sp
     return {
         "information_criterion": information_criterion,
         "error": model.error,
@@ -615,9 +631,12 @@ def main() -> int:
                 any_not_measurable = True
                 continue
             comparison = entry["comparison_vs_full"]
-            # Порог: относительная разница уровня > 20% ИЛИ корреляция
-            # сезонного профиля < 0.5 считается "заметным дрейфом".
-            if abs(comparison["level_diff_rel"]) > 0.2 or comparison["seasonal_corr"] < 0.5:
+            # MONTHLY_STABILITY_THRESHOLDS: относительная разница уровня > 20%
+            # ИЛИ корреляция сезонного профиля < 0.5 считается "заметным дрейфом".
+            if (
+                abs(comparison["level_diff_rel"]) > MONTHLY_STABILITY_THRESHOLDS["max_level_diff_rel_abs"]
+                or comparison["seasonal_corr"] < MONTHLY_STABILITY_THRESHOLDS["min_seasonal_corr"]
+            ):
                 any_unstable = True
 
     report["stability_not_measurable"] = any_not_measurable
