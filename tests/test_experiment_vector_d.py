@@ -3,14 +3,19 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from scripts.experiment_vector_d import (
+    DAILY_FIXTURES,
     FIXTURES,
+    _parse_daily_period,
     check_statsforecast_model_choice,
+    check_weekday_balance,
     compare_seasonal_cycles_within_full_series,
     fit_autoets_vector,
     load_dynamics_csv,
+    main_daily,
     truncate_series,
 )
 
@@ -95,3 +100,59 @@ def test_statsforecast_cross_check_reports_model_structure():
     assert result["method"].startswith("ETS(")
     assert len(result["components"]) == 4
     assert isinstance(result["has_seasonal"], bool)
+
+
+# --- Вторая итерация (дневные данные, sp=7): парсер и проверка баланса дней недели.
+# Дневных фикстур ещё нет в репозитории (собираются отдельно) — эти тесты покрывают
+# только код на контролируемых мини-примерах, не подменяют реальный эксперимент.
+
+
+def test_parse_daily_period_reads_dotted_date():
+    # Формат дневной выгрузки — "22.06.2026" (день.месяц.год с точками),
+    # НЕ русское название месяца, как в месячных фикстурах.
+    period = _parse_daily_period("22.06.2026")
+    assert period == pd.Period("2026-06-22", freq="D")
+
+
+def test_parse_daily_period_rejects_ru_month_format():
+    # Месячный парсер и дневной несовместимы — проверяем, что дневной именно
+    # падает на "август 2024", а не молча даёт неверный результат.
+    with pytest.raises(ValueError):
+        _parse_daily_period("август 2024")
+
+
+def test_check_weekday_balance_detects_balanced_window():
+    # 56-дневное окно, кратное семи, начинающееся с понедельника — каждый
+    # день недели встречается ровно 8 раз.
+    index = pd.period_range(start="2026-06-22", periods=56, freq="D")  # понедельник
+    series = pd.Series(range(56), index=index)
+
+    result = check_weekday_balance(series)
+
+    assert result["balanced"] is True
+    assert set(result["counts_by_weekday"].values()) == {8}
+    assert sum(result["counts_by_weekday"].values()) == 56
+
+
+def test_check_weekday_balance_detects_unbalanced_window():
+    # Окно длиной не кратной семи (49 + 3 дня) — баланс должен быть нарушен.
+    index = pd.period_range(start="2026-06-22", periods=52, freq="D")
+    series = pd.Series(range(52), index=index)
+
+    result = check_weekday_balance(series)
+
+    assert result["balanced"] is False
+
+
+def test_main_daily_fails_clearly_when_fixtures_are_missing():
+    """Дневные фикстуры ещё не собраны (см. docs/EXPERIMENT_VECTOR_D.md) —
+    main_daily() должна падать с понятной ошибкой, а не молча пропускать
+    отсутствующие данные или подставлять что-то вместо них.
+    """
+    assert not any(path.exists() for path in DAILY_FIXTURES.values()), (
+        "Ожидалось, что дневные фикстуры ещё не собраны — если они уже появились, "
+        "этот тест и main_daily() пора запускать на реальных данных, а не проверять отказ"
+    )
+
+    with pytest.raises(FileNotFoundError, match="Дневные фикстуры ещё не собраны"):
+        main_daily()

@@ -1,11 +1,13 @@
 """MVP-проверка гипотезы #23 (независимый вариант "Г"): устойчивость вектора
-параметров AutoETS(sp=12), снятого с месячных фикстур Wordstat.
+параметров AutoETS, снятого с фикстур Wordstat. Две итерации, две грануляции:
 
+ПЕРВАЯ ИТЕРАЦИЯ (main(), sp=12, месячные фикстуры, уже собраны) —
+отрицательный результат, см. docs/EXPERIMENT_VECTOR_D.md.
 Формат фикстур — см. docs/DATA.md: UTF-8 с BOM, переводы строк только CR
 (`\\r`, без `\\n`), разделитель полей `;`, десятичная запятая, период вида
 "август 2024" (русское название месяца текстом + год).
 
-Порядок проверки (обязателен, см. issue #23):
+Порядок проверки первой итерации (обязателен, см. issue #23):
 1. Разобрать три фикстуры в месячные ряды.
 2. Снять вектор AutoETS(sp=12): уровень, тренд, 12 сезонных коэффициентов
    (sktime/statsmodels — основной бэкенд).
@@ -19,7 +21,17 @@
 4. Только если устойчивость подтвердилась — проверить, различает ли вектор
    сезонный профиль («новогодние подарки») от плоского («купить телефон»).
 
-Запуск: python scripts/experiment_vector_d.py
+ВТОРАЯ ИТЕРАЦИЯ (main_daily(), sp=7, дневные фикстуры, окно 56 дней = 8
+полных недель пн→вс) — предрегистрация в docs/EXPERIMENT_VECTOR_D.md,
+прогон ждёт дневных фикстур (DAILY_FIXTURES, собираются отдельно). Формат
+дневного «Периода» — DD.MM.YYYY (например "22.06.2026"), отдельный парсер
+(_parse_daily_period, load_daily_dynamics_csv) — НЕ переиспользует русско-
+месячный. Перед фитом обязательна проверка check_weekday_balance() —
+каждый день недели должен встречаться ровно 8 раз на 56-дневном окне.
+
+Запуск:
+- python scripts/experiment_vector_d.py          -> первая итерация
+- python scripts/experiment_vector_d.py --daily  -> вторая итерация
 (время выполнения не измеряется и не репортится — не характеристика метода)
 """
 
@@ -50,6 +62,25 @@ FIXTURES = {
     "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_mid_freq.csv",
 }
 
+# Вторая итерация (sp=7, дневная грануляция) — предполагаемые имена файлов,
+# фикстуры собираются отдельно (см. docs/EXPERIMENT_VECTOR_D.md, вторая
+# итерация) и в репозитории на момент написания этого кода ещё отсутствуют.
+# main_daily() явно и понятно падает, если файла нет — не подставляет и не
+# синтезирует данные вместо него.
+DAILY_FIXTURES = {
+    "seasonal (новогодние подарки)": FIXTURES_DIR / "dynamics_daily_seasonal.csv",
+    "high_freq (купить телефон)": FIXTURES_DIR / "dynamics_daily_high_freq.csv",
+    "mid_freq (курсы английского)": FIXTURES_DIR / "dynamics_daily_mid_freq.csv",
+}
+
+# Предрегистрированные пороги устойчивости второй итерации (docs/EXPERIMENT_VECTOR_D.md):
+# объявлены ДО прогона на реальных данных, не корректируются по результату.
+DAILY_STABILITY_THRESHOLDS = {
+    "min_seasonal_corr": 0.7,
+    "max_level_diff_rel_abs": 0.2,
+    "max_seasonal_mae_rel": 0.3,
+}
+
 RU_MONTHS = {
     "январь": 1,
     "февраль": 2,
@@ -67,26 +98,50 @@ RU_MONTHS = {
 
 
 def _parse_ru_period(period: str) -> pd.Period:
-    """"август 2024" -> pandas Period с частотой M."""
+    """"август 2024" -> pandas Period с частотой M. Формат месячных фикстур
+    первой итерации (sp=12): русское название месяца текстом + год.
+    """
     month_name, year = period.strip().split()
     month = RU_MONTHS[month_name.lower()]
     return pd.Period(year=int(year), month=month, day=1, freq="M")
 
 
-def load_dynamics_csv(path: Path) -> pd.Series:
-    """Разобрать сырой CSV Вордстата (dynamics) в месячный pd.Series.
+def _parse_daily_period(period: str) -> pd.Period:
+    """"22.06.2026" -> pandas Period с частотой D. Формат дневных фикстур
+    второй итерации (sp=7): дата с точками DD.MM.YYYY — НЕ русский месяц,
+    как в месячном парсере выше. Смешивать эти два парсера нельзя: дневная
+    выгрузка Вордстата не использует текстовое название месяца.
+    """
+    day, month, year = period.strip().split(".")
+    return pd.Period(year=int(year), month=int(month), day=int(day), freq="D")
 
-    Особенности формата (docs/DATA.md), обрабатываются явно:
+
+def _read_raw_csv_lines(path: Path) -> list[str]:
+    """Прочитать сырой CSV Вордстата (общая механика для месячных и дневных
+    выгрузок, см. docs/DATA.md):
     - UTF-8 с BOM -> encoding="utf-8-sig".
     - Переводы строк только CR -> splitlines() (не ручной split("\\n")).
-    - Разделитель полей ";", 4-е поле (заголовок графика) пустое, игнорируется.
-    - Число запросов: разделитель тысяч — обычный пробел, без десятичной части.
-    - Период: "август 2024" — русский месяц текстом + год.
+    Возвращает строки файла без дополнительной фильтрации — вызывающий код
+    сам решает, что делать с заголовком и пустыми строками.
     """
     raw = path.read_text(encoding="utf-8-sig")
     lines = raw.splitlines()
     if not lines:
         raise ValueError(f"Пустой файл: {path}")
+    return lines
+
+
+def load_dynamics_csv(path: Path) -> pd.Series:
+    """Разобрать сырой CSV Вордстата (dynamics, МЕСЯЧНАЯ грануляция, sp=12,
+    первая итерация) в месячный pd.Series.
+
+    Особенности формата (docs/DATA.md), обрабатываются явно:
+    - UTF-8 с BOM, переводы строк только CR — см. _read_raw_csv_lines.
+    - Разделитель полей ";", 4-е поле (заголовок графика) пустое, игнорируется.
+    - Число запросов: разделитель тысяч — обычный пробел, без десятичной части.
+    - Период: "август 2024" — русский месяц текстом + год.
+    """
+    lines = _read_raw_csv_lines(path)
 
     header = lines[0].split(";")
     assert header[0] == "Период", f"Неожиданный заголовок в {path}: {header}"
@@ -105,6 +160,55 @@ def load_dynamics_csv(path: Path) -> pd.Series:
     series = pd.Series(counts, index=pd.PeriodIndex(periods, freq="M"), name="count")
     series = series.sort_index()
     return series
+
+
+def load_daily_dynamics_csv(path: Path) -> pd.Series:
+    """Разобрать сырой CSV Вордстата (dynamics, ДНЕВНАЯ грануляция, sp=7,
+    вторая итерация) в дневной pd.Series.
+
+    Отличия от load_dynamics_csv (месячный парсер НЕ переиспользуется):
+    - Период: "22.06.2026" — дата с точками DD.MM.YYYY, не русский месяц.
+    - Заголовок графика (4-е поле CSV) содержит конечную дату диапазона,
+      которая на день БОЛЬШЕ последней строки данных (эксклюзивная граница) —
+      даты берутся из строк данных, заголовок графика не используется как
+      источник дат.
+    Остальная механика формата совпадает с месячным парсером: BOM, CR-only
+    переводы строк, разделитель ";", пробел как разделитель тысяч.
+    """
+    lines = _read_raw_csv_lines(path)
+
+    header = lines[0].split(";")
+    assert header[0] == "Период", f"Неожиданный заголовок в {path}: {header}"
+
+    records: list[tuple[pd.Period, float]] = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        fields = line.split(";")
+        period_raw, count_raw = fields[0], fields[1]
+        period = _parse_daily_period(period_raw)
+        count = float(count_raw.replace(" ", "").replace(" ", ""))
+        records.append((period, count))
+
+    periods, counts = zip(*records, strict=True)
+    series = pd.Series(counts, index=pd.PeriodIndex(periods, freq="D"), name="count")
+    series = series.sort_index()
+    return series
+
+
+def check_weekday_balance(series: pd.Series) -> dict:
+    """Предрегистрированная проверка для окна второй итерации (sp=7): каждый
+    день недели должен встречаться РОВНО одинаковое число раз (8 раз на
+    56-дневном окне) — иначе недельный профиль смещён в пользу дней,
+    представленных чаще. Не запускать AutoETS(sp=7), пока эта проверка не
+    прошла (см. docs/EXPERIMENT_VECTOR_D.md, вторая итерация).
+    """
+    weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    weekdays = series.index.to_timestamp().weekday
+    counts_by_index = pd.Series(weekdays).value_counts().sort_index()
+    counts = {weekday_names[i]: int(counts_by_index.get(i, 0)) for i in range(7)}
+    balanced = len(set(counts.values())) == 1
+    return {"counts_by_weekday": counts, "balanced": balanced}
 
 
 @dataclass
@@ -131,20 +235,29 @@ class ParamVector:
         }
 
 
-def fit_autoets_vector(series: pd.Series, sp: int = 12) -> ParamVector:
-    """Снять вектор параметров AutoETS(sp=sp) с месячного ряда.
+def fit_autoets_vector(
+    series: pd.Series, sp: int = 12, information_criterion: str = "aic", calendar_anchor: str = "month"
+) -> ParamVector:
+    """Снять вектор параметров AutoETS(sp=sp) с ряда.
 
     Использует sktime AutoETS. Возвращает уровень, тренд (slope на конец
-    выборки) и полный сезонный профиль длиной sp, выровненный по календарным
-    месяцам (индекс 0 = январь, ..., 11 = декабрь) — чтобы ряды с разным
-    стартовым месяцем были сравнимы напрямую.
+    выборки) и полный сезонный профиль длиной sp.
+
+    calendar_anchor определяет, как выровнять сезонный профиль по
+    содержательным координатам (а не по позиции в массиве), чтобы ряды с
+    разным стартовым периодом были сравнимы напрямую:
+    - "month" (sp=12, первая итерация): индекс 0 = январь, ..., 11 = декабрь.
+    - "weekday" (sp=7, вторая итерация): индекс 0 = понедельник, ..., 6 = воскресенье.
+    Другие sp без явного anchor-соответствия не поддерживаются — вектор в
+    этом случае остаётся выровненным просто "с конца ряда назад", без
+    привязки к календарю (используйте только для sp из {7, 12}).
     """
     from sktime.forecasting.ets import AutoETS
 
     y = series.reset_index(drop=True).astype(float)
     y.index = pd.RangeIndex(len(y))
 
-    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion="aic")
+    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion=information_criterion)
     forecaster.fit(y)
 
     # Приватный атрибут sktime — единственный способ достать вектор параметров
@@ -167,19 +280,25 @@ def fit_autoets_vector(series: pd.Series, sp: int = 12) -> ParamVector:
         # последние sp строк дают ровно один полный сезонный цикл, где строка
         # states.iloc[-1] соответствует последней точке ряда, states.iloc[-2] —
         # предпоследней, и т.д. Раскладываем эти sp значений по календарным
-        # месяцам, используя месяц последней точки как якорь.
+        # координатам, используя координату последней точки как якорь.
         raw_seasonal = states["seasonal"].tail(sp).to_numpy(dtype=float)
     else:
         raw_seasonal = np.zeros(sp)
 
     last_period = series.index[-1]
-    last_month = last_period.month  # 1..12
+    if calendar_anchor == "month":
+        last_coord = last_period.month  # 1..12
+    elif calendar_anchor == "weekday":
+        last_coord = last_period.to_timestamp().weekday() + 1  # 1..7 (1=понедельник)
+    else:
+        raise ValueError(f"Неизвестный calendar_anchor: {calendar_anchor!r}")
+
     calendar_seasonal = np.zeros(sp)
-    # raw_seasonal[-1] — последняя точка (месяц last_month), raw_seasonal[-2] —
-    # месяц перед ней, и т.д. в обратном порядке.
+    # raw_seasonal[-1] — последняя точка (координата last_coord), raw_seasonal[-2] —
+    # координата перед ней, и т.д. в обратном порядке.
     for offset, value in enumerate(reversed(raw_seasonal.tolist())):
-        month = ((last_month - 1 - offset) % sp) + 1  # 1..12
-        calendar_seasonal[month - 1] = value
+        coord = ((last_coord - 1 - offset) % sp) + 1  # 1..sp
+        calendar_seasonal[coord - 1] = value
 
     return ParamVector(
         level=level, trend=trend, has_trend=has_trend, seasonal=calendar_seasonal, model_spec=model_spec
@@ -264,9 +383,20 @@ def compare_vectors(full: ParamVector, other: ParamVector) -> dict:
     }
 
 
-def run_stability_check(series: pd.Series, label: str, full_vector: ParamVector) -> dict:
-    """Пункт 3: снять вектор на ряде, укороченном на 3 и на 6 точек,
-    сравнить с уже снятым вектором на полном ряде.
+def run_stability_check(
+    series: pd.Series,
+    label: str,
+    full_vector: ParamVector,
+    drops: tuple[int, ...] = (3, 6),
+    sp: int = 12,
+    calendar_anchor: str = "month",
+) -> dict:
+    """Пункт 3: снять вектор на ряде, укороченном на каждое значение из
+    `drops` точек, сравнить с уже снятым вектором на полном ряде.
+
+    Первая итерация (sp=12, месячные): drops=(3, 6) — укорочение в месяцах.
+    Вторая итерация (sp=7, дневные): drops=(7, 14) — укорочение в днях
+    (−1 и −2 недели), calendar_anchor="weekday".
 
     Ключи результата различают два разных исхода намеренно:
     - not_measurable: AutoETS отказался фититься (ValueError на инициализации) —
@@ -276,12 +406,12 @@ def run_stability_check(series: pd.Series, label: str, full_vector: ParamVector)
     """
     result: dict = {"label": label, "n_points_full": len(series), "vector_full": full_vector.to_dict()}
 
-    for drop in (3, 6):
+    for drop in drops:
         truncated = truncate_series(series, drop)
         n = len(truncated)
         entry: dict = {"n_points": n}
         try:
-            truncated_vector = fit_autoets_vector(truncated)
+            truncated_vector = fit_autoets_vector(truncated, sp=sp, calendar_anchor=calendar_anchor)
             entry["vector"] = truncated_vector.to_dict()
             entry["comparison_vs_full"] = compare_vectors(full_vector, truncated_vector)
             entry["outcome"] = "measured"
@@ -314,19 +444,53 @@ def check_statsforecast_model_choice(series: pd.Series, sp: int = 12) -> dict:
     }
 
 
+def check_sktime_model_choice(series: pd.Series, sp: int = 12, information_criterion: str = "aic") -> dict:
+    """Какую структуру модели выбирает основной бэкенд (sktime/statsmodels)
+    при заданном information_criterion. Используется, чтобы отделить эффект
+    выбора критерия (AIC vs AICc) от эффекта различия реализаций при
+    сравнении с statsforecast (см. docs/EXPERIMENT_VECTOR_D.md, раздел 3):
+    fit_autoets_vector() в этом скрипте всегда использует "aic" — осознанный
+    выбор автора, а не дефолт sktime (дефолт — "aicc", как и у statsforecast).
+    """
+    from sktime.forecasting.ets import AutoETS
+
+    y = series.reset_index(drop=True).astype(float)
+    y.index = pd.RangeIndex(len(y))
+
+    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion=information_criterion)
+    forecaster.fit(y)
+    fitted = forecaster._fitted_forecaster  # type: ignore[attr-defined]
+    model = fitted.model
+    has_seasonal = model.seasonal is not None
+    return {
+        "information_criterion": information_criterion,
+        "error": model.error,
+        "trend": model.trend,
+        "seasonal": model.seasonal,
+        "has_seasonal": has_seasonal,
+        "damped": bool(model.damped_trend),
+    }
+
+
 def run_discrimination_check(vectors: dict[str, ParamVector]) -> dict:
     """Пункт 4: различает ли вектор сезонный профиль «новогодних подарков»
     от плоского профиля «купить телефон» — по размаху сезонной компоненты
     и по позиции пика.
+
+    "peak_position" — 1-based индекс пика внутри вектора: для sp=12 (первая
+    итерация, calendar_anchor="month") это номер месяца (1=январь..12=декабрь);
+    для sp=7 (вторая итерация, calendar_anchor="weekday") это номер дня недели
+    (1=понедельник..7=воскресенье). Само значение sp/anchor здесь не хранится
+    — вызывающий код (main/main_daily) знает, какую итерацию репортит.
     """
     result = {}
     for label, vector in vectors.items():
         seasonal = vector.seasonal
-        peak_month = int(np.argmax(seasonal)) + 1  # 1..12
+        peak_position = int(np.argmax(seasonal)) + 1  # 1-based
         result[label] = {
             "seasonal_range": round(float(seasonal.max() - seasonal.min()), 6),
             "seasonal_std": round(float(seasonal.std()), 6),
-            "peak_month": peak_month,
+            "peak_position": peak_position,
             "peak_value": round(float(seasonal.max()), 6),
         }
     return result
@@ -375,5 +539,83 @@ def main() -> int:
     return 0
 
 
+def main_daily() -> int:
+    """Вторая итерация MVP #23 (sp=7, дневная грануляция, окно 56 дней =
+    8 полных недель, пн→вс). См. docs/EXPERIMENT_VECTOR_D.md, раздел
+    «Вторая итерация» — предрегистрация критериев, объявленная ДО прогона.
+
+    Требует дневных фикстур в DAILY_FIXTURES (собираются отдельно от этого
+    скрипта — см. docs/EXPERIMENT_VECTOR_D.md о сериализации сбора между
+    параллельными воркерами). Если файла нет, падает с понятной ошибкой —
+    не подставляет и не синтезирует данные вместо него.
+
+    Пороги устойчивости — DAILY_STABILITY_THRESHOLDS, предрегистрированы:
+    corr >= 0.7, |level_diff_rel| <= 0.2, seasonal_mae_rel <= 0.3.
+    """
+    missing = [str(path) for path in DAILY_FIXTURES.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Дневные фикстуры ещё не собраны (см. docs/EXPERIMENT_VECTOR_D.md, "
+            f"вторая итерация): {missing}"
+        )
+
+    thresholds = DAILY_STABILITY_THRESHOLDS
+    report: dict = {"fixtures": {}, "thresholds": thresholds}
+    full_vectors: dict[str, ParamVector] = {}
+    any_not_measurable = False
+    any_unstable = False
+
+    for label, path in DAILY_FIXTURES.items():
+        series = load_daily_dynamics_csv(path)
+
+        weekday_balance = check_weekday_balance(series)
+        if not weekday_balance["balanced"]:
+            raise ValueError(
+                f"Окно '{label}' не сбалансировано по дням недели "
+                f"(нужно ровно 8 на каждый день): {weekday_balance['counts_by_weekday']}"
+            )
+
+        full_vector = fit_autoets_vector(series, sp=7, calendar_anchor="weekday")
+        full_vectors[label] = full_vector
+
+        stability = run_stability_check(series, label, full_vector, drops=(7, 14), sp=7, calendar_anchor="weekday")
+        stability["weekday_balance"] = weekday_balance
+        stability["statsforecast_cross_check"] = {
+            f"drop_{drop}": check_statsforecast_model_choice(truncate_series(series, drop), sp=7)
+            for drop in (0, 7, 14)
+        }
+        report["fixtures"][label] = stability
+
+        for drop in (7, 14):
+            entry = stability[f"truncated_minus_{drop}"]
+            if entry["outcome"] == "not_measurable":
+                any_not_measurable = True
+                continue
+            comparison = entry["comparison_vs_full"]
+            if (
+                comparison["seasonal_corr"] < thresholds["min_seasonal_corr"]
+                or abs(comparison["level_diff_rel"]) > thresholds["max_level_diff_rel_abs"]
+                or comparison["seasonal_mae_rel_to_full_range"] > thresholds["max_seasonal_mae_rel"]
+            ):
+                any_unstable = True
+
+    report["stability_not_measurable"] = any_not_measurable
+    report["stability_unstable"] = any_unstable
+    stop_condition_triggered = any_not_measurable or any_unstable
+    report["stability_stop_condition_triggered"] = stop_condition_triggered
+
+    if not stop_condition_triggered:
+        report["discrimination"] = run_discrimination_check(full_vectors)
+    else:
+        report["discrimination"] = "SKIPPED — стоп-условие устойчивости сработало (см. предрегистрацию)"
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 if __name__ == "__main__":
+    # `python scripts/experiment_vector_d.py` -> первая итерация (sp=12, месячные, уже собранные фикстуры).
+    # `python scripts/experiment_vector_d.py --daily` -> вторая итерация (sp=7, дневные), как только фикстуры появятся.
+    if "--daily" in sys.argv:
+        sys.exit(main_daily())
     sys.exit(main())
