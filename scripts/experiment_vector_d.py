@@ -516,6 +516,57 @@ def check_sktime_model_choice(series: pd.Series, sp: int = 12, information_crite
     }
 
 
+def empirical_weekday_profile(series: pd.Series) -> np.ndarray:
+    """Простое среднее по дням недели, без всякой модели — независимая опора
+    для оценки сезонного профиля (см. docs/EXPERIMENT_VECTOR_D.md, вторая
+    итерация, «купить телефон»): профиль, разошедшийся с эмпирикой, означал
+    бы ошибку снятия, а не свойство спроса. Возвращает вектор длины 7,
+    нормированный к среднему 1, индекс 0 = понедельник.
+    """
+    weekdays = series.index.to_timestamp().weekday
+    grouped = pd.Series(series.to_numpy(), index=weekdays).groupby(level=0).mean()
+    profile = np.array([grouped.get(i, np.nan) for i in range(7)])
+    return profile / np.nanmean(profile)
+
+
+def fit_statsforecast_seasonal_profile(series: pd.Series, sp: int = 7) -> tuple[np.ndarray | None, str]:
+    """Извлечь нормированный сезонный профиль из statsforecast (не только
+    структуру модели, как check_statsforecast_model_choice — сами
+    коэффициенты), выровненный по дням недели так же, как в
+    fit_autoets_vector. Используется только для диагностики граничного
+    случая («купить телефон», см. docs/EXPERIMENT_VECTOR_D.md) — НЕ входит
+    в основной вектор и не участвует в стоп-условии устойчивости (см.
+    test_statsforecast_is_a_diagnostic_backend_not_wired_into_the_stability_gate).
+
+    Возвращает (None, components), если модель не включает сезонность.
+    """
+    from statsforecast.models import AutoETS as SFAutoETS
+
+    y = series.astype(float).to_numpy()
+    model = SFAutoETS(season_length=sp)
+    model.fit(y)
+    components = model.model_["components"]
+    has_seasonal = components[2] != "N"
+    if not has_seasonal:
+        return None, components
+
+    has_trend = components[1] != "N"
+    seasonal_col = 1 + (1 if has_trend else 0)
+    states = model.model_["states"]
+    level = float(states[-1, 0])
+    seasonal_states = states[-sp:, seasonal_col]
+
+    last_period = series.index[-1]
+    last_weekday = last_period.to_timestamp().weekday()  # 0=понедельник
+    calendar_seasonal = np.zeros(sp)
+    for offset, value in enumerate(reversed(seasonal_states.tolist())):
+        coord = (last_weekday - offset) % sp
+        calendar_seasonal[coord] = value
+
+    normalized = 1 + calendar_seasonal / level
+    return normalized, components
+
+
 def run_discrimination_check(vectors: dict[str, ParamVector]) -> dict:
     """Пункт 4: различает ли вектор сезонный профиль «новогодних подарков»
     от плоского профиля «купить телефон» — по размаху сезонной компоненты

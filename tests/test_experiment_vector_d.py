@@ -1,5 +1,6 @@
 """Тесты для scripts/experiment_vector_d.py (MVP #23, вариант "Г")."""
 
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -16,9 +17,12 @@ from scripts.experiment_vector_d import (
     check_weekday_balance,
     compare_seasonal_cycles_within_full_series,
     compare_vectors,
+    empirical_weekday_profile,
     fit_autoets_vector,
+    fit_statsforecast_seasonal_profile,
     load_daily_dynamics_csv,
     load_dynamics_csv,
+    run_stability_check,
     truncate_series,
 )
 
@@ -245,3 +249,64 @@ def test_compare_vectors_marks_both_seasonal_false_when_either_vector_lacks_seas
     assert comparison["both_seasonal"] is False
     assert np.isnan(comparison["seasonal_corr"])
     assert np.isnan(comparison["seasonal_mae_rel_to_full_range"])
+
+
+def test_statsforecast_is_a_diagnostic_backend_not_wired_into_the_stability_gate():
+    """Регрессионный тест против дыры, найденной в независимом варианте MVP #23
+    (issue #23, ветка mvp-23-b, коммит 0ff4532 «keep diagnostic backend outside
+    stability gate»): там statsforecast по ошибке участвовал в one `all(...)` со
+    sktime, из-за чего pass/fail стоп-условия мог решаться вспомогательным
+    бэкендом, а не только предрегистрированным первичным (sktime). Дыра тихая —
+    числа отчёта не меняются, но семантика gate меняется незаметно.
+
+    Проверяем структурно: run_stability_check() — единственная функция, чей
+    результат участвует в вычислении any_unstable/any_not_measurable в main()/
+    main_daily() (см. код) — не принимает statsforecast-результаты и не имеет
+    возможности на них ссылаться (statsforecast_cross_check добавляется в
+    отчёт ПОСЛЕ вызова run_stability_check, отдельным полем, см. main_daily()).
+    """
+    signature = inspect.signature(run_stability_check)
+    assert "statsforecast" not in str(signature).lower()
+
+    source = inspect.getsource(run_stability_check)
+    assert "statsforecast" not in source.lower()
+
+
+def test_empirical_weekday_profile_matches_high_freq_saturday_dip():
+    """Независимое подтверждение находки другого варианта MVP #23 (не
+    копирование чисел, а собственный пересчёт): у «купить телефон»
+    эмпирические средние по дням недели дают провал в субботу,
+    качественно похожий на будни/выходные у сезонных фраз — слабый
+    сигнал, но не плоский.
+    """
+    series = load_daily_dynamics_csv(DAILY_FIXTURES["high_freq (купить телефон)"])
+    train = truncate_series(series, len(series) - TRAIN_WINDOW_DAYS)
+
+    profile = empirical_weekday_profile(train)
+
+    assert len(profile) == 7
+    assert abs(profile.mean() - 1.0) < 1e-9
+    # Суббота (индекс 5) — минимум профиля, как и у сезонных фраз этого отчёта.
+    assert int(np.argmin(profile)) == 5
+
+
+def test_fit_statsforecast_seasonal_profile_high_freq_has_seasonal_and_is_stable():
+    """Независимая проверка граничного случая «купить телефон»
+    (docs/EXPERIMENT_VECTOR_D.md, вторая итерация, раздел 3): statsforecast
+    находит слабую, но устойчивую недельную форму там, где основной бэкенд
+    её не видит вовсе.
+    """
+    series = load_daily_dynamics_csv(DAILY_FIXTURES["high_freq (купить телефон)"])
+    train = truncate_series(series, len(series) - TRAIN_WINDOW_DAYS)
+
+    full_profile, components = fit_statsforecast_seasonal_profile(train, sp=7)
+    assert full_profile is not None, f"ожидалась сезонная модель, получено {components}"
+    assert len(full_profile) == 7
+
+    for drop in (7, 14):
+        window = truncate_series(train, drop)
+        profile, _ = fit_statsforecast_seasonal_profile(window, sp=7)
+        assert profile is not None
+        corr = float(np.corrcoef(full_profile, profile)[0, 1])
+        # Слабая, но устойчивая форма: корреляция заметно выше нуля на обоих рефитах.
+        assert corr > 0.9, f"drop={drop}: corr={corr}"
