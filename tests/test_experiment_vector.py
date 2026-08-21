@@ -57,8 +57,8 @@ def test_rejects_missing_month(tmp_path):
 
 def test_report_compares_every_successful_truncation_independently(monkeypatch):
     experiment = load_experiment_module()
-    full = experiment.DemandVector(100.0, 10.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0)
-    shortened = experiment.DemandVector(90.0, 9.0, {month: 1.5 for month in experiment.MONTH_LABELS}, 1.0)
+    full = experiment.DemandVector("test", 100.0, 10.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0)
+    shortened = experiment.DemandVector("test", 90.0, 9.0, {month: 1.5 for month in experiment.MONTH_LABELS}, 1.0)
     values = experiment.pd.Series(
         range(30),
         index=experiment.pd.period_range("2024-01", periods=30, freq="M"),
@@ -85,12 +85,12 @@ def test_report_keeps_same_phrase_exports_separate(monkeypatch):
     )
     vectors = iter(
         [
-            experiment.DemandVector(100.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
-            experiment.DemandVector(90.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
-            experiment.DemandVector(80.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
-            experiment.DemandVector(200.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
-            experiment.DemandVector(160.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
-            experiment.DemandVector(120.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 100.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 90.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 80.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 200.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 160.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
+            experiment.DemandVector("test", 120.0, 0.0, {month: 1.0 for month in experiment.MONTH_LABELS}, 1.0),
         ]
     )
     monkeypatch.setattr(experiment, "fit_monthly_vector", lambda _: next(vectors))

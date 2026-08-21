@@ -33,7 +33,7 @@ MONTHS = {
 }
 
 MONTH_LABELS = tuple(MONTHS)
-MODEL_DESCRIPTION = "AutoETS(auto=False, error='add', trend='add', seasonal='add', sp=12)"
+MODEL_DESCRIPTION = "AutoETS(auto=True, sp=12)"
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,7 @@ class DemandSeries:
 
 @dataclass(frozen=True)
 class DemandVector:
+    specification: str
     level: float
     trend: float
     seasonal: dict[str, float]
@@ -88,23 +89,23 @@ def read_dynamics_csv(path: Path) -> DemandSeries:
 
 
 def fit_monthly_vector(values: pd.Series) -> DemandVector:
-    """Fit the fixed additive ETS specification and expose its final state vector."""
-    forecaster = AutoETS(
-        auto=False,
-        error="add",
-        trend="add",
-        seasonal="add",
-        sp=12,
-    )
+    """Fit AutoETS and expose the selected model's final state vector."""
+    forecaster = AutoETS(auto=True, sp=12)
     fitted = forecaster.fit(values)._fitted_forecaster
     final_state = fitted.states.iloc[-1]
-    seasonal_by_month = {
-        MONTH_LABELS[period.month - 1]: float(seasonal)
-        for period, seasonal in fitted.states["seasonal"].iloc[-12:].items()
-    }
+    seasonal_by_month = {}
+    if "seasonal" in fitted.states:
+        seasonal_by_month = {
+            MONTH_LABELS[period.month - 1]: float(seasonal)
+            for period, seasonal in fitted.states["seasonal"].iloc[-12:].items()
+        }
     return DemandVector(
+        specification=(
+            f"error={fitted.model.error}, trend={fitted.model.trend}, "
+            f"seasonal={fitted.model.seasonal}, damped_trend={fitted.model.damped_trend}"
+        ),
         level=float(final_state["level"]),
-        trend=float(final_state["trend"]),
+        trend=float(final_state.get("trend", 0.0)),
         seasonal=seasonal_by_month,
         aic=float(fitted.aic),
     )
@@ -149,8 +150,8 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
         "Три реальные месячные выгрузки из `tests/fixtures/` прочитаны с UTF-8 BOM, CR-only переводами строк, "
         "русскими месяцами и `;`.",
         f"Для каждого ряда задана одна и та же модель: `{MODEL_DESCRIPTION}`.",
-        "Вектор — финальное состояние модели: уровень, тренд и 12 аддитивных сезонных коэффициентов "
-        "по календарным месяцам.",
+        "Вектор — финальное состояние выбранной модели: уровень, тренд и, если AutoETS выбрал сезонность, "
+        "сезонные коэффициенты по календарным месяцам.",
         "",
         "## Проверка устойчивости — стоп-условие",
         "",
@@ -170,10 +171,11 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
             [
                 f"### {phrase} ({points} точек, удалено: {removed})",
                 "",
+                f"- выбранная спецификация: `{vector.specification}`",
                 f"- AIC: {format_number(vector.aic)}",
                 f"- уровень: {format_number(vector.level)}",
                 f"- тренд: {format_number(vector.trend)}",
-                f"- сезонные коэффициенты: {seasonal}",
+                f"- сезонные коэффициенты: {seasonal or 'модель не выбрала сезонный компонент'}",
                 "",
             ]
         )
@@ -225,12 +227,9 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
                 "- Различение сезонного и плоского профилей — не запускалось, так как оно следует после устойчивости.",
                 "- Недельный профиль `sp=7` — нет дневного ряда; он вне объёма этого MVP.",
                 "",
-                "Для повторного MVP нужен склеенный ряд из #6 достаточной длины: после удаления шести месяцев в нём "
-                "более длинный ряд нужен и для содержательной, а не минимально допустимой, оценки сезонности.",
-                "должны оставаться как минимум 24 месячные точки. Практически это означает "
-                "не менее 30 точек до усечения; более длинный ряд нужен и для содержательной, "
-                "а не минимально допустимой, оценки сезонности.",
-                "более длинный ряд нужен и для содержательной, а не минимально допустимой, оценки сезонности.",
+                "Для повторного MVP нужен склеенный ряд из #6 не менее чем из 30 точек: после удаления шести "
+                "месяцев должны оставаться как минимум 24 точки; более длинный ряд нужен для содержательной "
+                "оценки сезонности.",
             ]
         )
     else:
