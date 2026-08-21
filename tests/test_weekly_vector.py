@@ -106,11 +106,20 @@ def test_aic_is_not_comparable_across_backends(seasonal_train):
         sf = StatsForecastAutoETS(season_length=SP, model="ANN")
         sf.fit(values.to_numpy())
 
+    n = len(values)
     sf_loglik = float(np.ravel(sf.model_["loglik"])[0])
-    residuals = np.asarray(sf.model_["residuals"], dtype=float)
-    concentrated = -len(values) / 2 * np.log(np.sum(residuals**2))
+    sk_loglik = float(sk._fitted_forecaster.llf)
+    sse = float(np.sum(np.asarray(sf.model_["residuals"], dtype=float) ** 2))
 
-    # Правдоподобие statsforecast — ровно концентрированная форма.
-    assert sf_loglik == pytest.approx(concentrated, abs=0.01)
-    # И оно систематически ниже, чем у statsmodels, при той же спецификации.
-    assert sf_loglik < float(sk._fitted_forecaster.llf) - 20
+    # statsforecast — ровно `−n/2·log(SSE)`.
+    assert sf_loglik == pytest.approx(-n / 2 * np.log(sse), abs=0.01)
+    # sktime — полное гауссово правдоподобие (с точностью до оптимума подгонки).
+    full_gaussian = -n / 2 * (np.log(2 * np.pi) + np.log(sse / n) + 1)
+    assert sk_loglik == pytest.approx(full_gaussian, abs=5.0)
+
+    # Разность двух формул складывается из слагаемых РАЗНОГО знака: опущенной
+    # константы (−79.46 при n=56) и отсутствия деления SSE на n (+112.71).
+    # По одной константе сдвиг получился бы втрое больше наблюдаемого.
+    expected_gap = (-n / 2 * np.log(2 * np.pi) - n / 2) + (n / 2 * np.log(n))
+    assert expected_gap == pytest.approx(33.25, abs=0.1)
+    assert sk_loglik - sf_loglik == pytest.approx(expected_gap, abs=5.0)
