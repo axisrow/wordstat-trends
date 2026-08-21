@@ -1,0 +1,3 @@
+# Реальная выгрузка Вордстата: BOM + CR-only переводы строк — часть замера
+# (docs/DATA.md), а не артефакт форматирования. Git не должен их трогать.
+tests/fixtures/dynamics_sample.csv -text
