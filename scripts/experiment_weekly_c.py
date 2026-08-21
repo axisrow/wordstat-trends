@@ -378,9 +378,16 @@ def _conclusions(out, emit, windows, vectors, results, agreement, verdicts, stab
     if legacy.exists():
         body = legacy.read_text(encoding="utf-8")
         # Снимаем служебный заголовок и понижаем уровни, чтобы вложить в общий отчёт.
-        lines = [ln for ln in body.splitlines() if not ln.startswith("<!--")]
-        for line in lines:
-            emit(("#" + line) if line.startswith("#") else line)
+        for line in body.splitlines():
+            if line.startswith("<!--"):
+                continue
+            if line.startswith("# "):
+                # Собственный заголовок вложенного отчёта опускаем: его роль
+                # уже выполняет заголовок «Первая итерация» выше.
+                continue
+            # Понижаем на два уровня, чтобы шаги первой итерации не встали
+            # вровень с шагами второй.
+            emit(("##" + line) if line.startswith("#") else line)
     else:
         emit("*(файл `docs/EXPERIMENT_VECTOR_C_SP12.md` не найден)*")
     emit()
