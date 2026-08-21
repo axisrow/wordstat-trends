@@ -7,7 +7,7 @@ requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git@45512d402cd75e8c30703c2bfdb86cb1a7a059e5",
+    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git@d3e6ed2fcb070f0879b8ba2ba701c17a5a6d2e73",
     "sktime==1.1.0",
     "statsmodels==0.14.6",
     "statsforecast==2.0.1",
