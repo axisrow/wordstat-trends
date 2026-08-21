@@ -42,7 +42,11 @@ MONTHS: dict[str, int] = {
     )
 }
 
-_PERIOD_COLUMN = "Период"
+# Первая колонка называется по-разному в зависимости от грануляции:
+# «Период» в месячной выгрузке, «Дата» — в дневной (замерено на живом
+# прогоне cli fc0e9a1). Именно она различает представления `dynamics` и
+# `regions`, у которых вторая колонка называется одинаково.
+_PERIOD_COLUMNS = {"monthly": "Период", "daily": "Дата"}
 _QUERIES_COLUMN = "Число запросов"
 
 
@@ -103,8 +107,12 @@ def load_dynamics(path: str | Path, granularity: str = "monthly") -> pd.Series:
     # она называется точно так же («Регион;Число запросов;…», см. docs/DATA.md).
     # Различает представления именно первая колонка, и без неё regions-файл
     # проходил бы проверку, падая позже с невнятным «Не период Вордстата».
-    if len(header) < 2 or header[0].strip() != _PERIOD_COLUMN or header[1].strip() != _QUERIES_COLUMN:
-        raise ValueError(f"Неожиданный заголовок dynamics: {header[:2]}")
+    expected_period = _PERIOD_COLUMNS[granularity]
+    if len(header) < 2 or header[0].strip() != expected_period or header[1].strip() != _QUERIES_COLUMN:
+        raise ValueError(
+            f"Неожиданный заголовок dynamics ({granularity}): {header[:2]}, "
+            f"ожидался [{expected_period!r}, {_QUERIES_COLUMN!r}]"
+        )
 
     records: list[tuple[pd.Period, int]] = []
     for row in rows[1:]:
