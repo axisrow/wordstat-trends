@@ -364,6 +364,16 @@ def holdout_metrics(actual: pd.Series, forecast: np.ndarray) -> dict[str, Any]:
     }
 
 
+def primary_stability_gate(stability: dict[str, dict[str, dict[str, Any]]]) -> bool:
+    """Gate only on the preregistered primary sktime model.
+
+    statsforecast is an independent diagnostic backend. Its stability metrics
+    are measured and reported, but cannot reverse the primary hypothesis gate.
+    """
+
+    return all(metric["stable"] for metric in stability["sktime"].values())
+
+
 def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
     """Run the daily experiment in its preregistered order."""
 
@@ -396,7 +406,8 @@ def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
                 key: stability_metrics(fitted_objects[key][backend].vector, full_vector)
                 for key in ("minus_7", "minus_14")
             }
-        stable = all(metric["stable"] for backend in stability.values() for metric in backend.values())
+        stable = primary_stability_gate(stability)
+        statsforecast_stable = all(metric["stable"] for metric in stability["statsforecast"].values())
         semantic: dict[str, Any]
         if stable:
             semantic = {}
@@ -424,6 +435,7 @@ def run_experiment(fixtures_dir: Path) -> dict[str, Any]:
             "fits": fits,
             "stability": stability,
             "stability_passed": stable,
+            "statsforecast_stability_descriptive": statsforecast_stable,
             "semantic": semantic,
             "holdout_metrics": {
                 backend: holdout_metrics(holdout, fitted_objects["minus_0"][backend].forecast)

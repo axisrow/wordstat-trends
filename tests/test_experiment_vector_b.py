@@ -7,6 +7,7 @@ from wordstat_trends.experiment_vector_b import (
     load_wordstat_daily,
     parse_daily_period,
     parse_request_count,
+    primary_stability_gate,
     split_experiment_window,
 )
 
@@ -83,3 +84,12 @@ def test_real_daily_fixtures_preserve_export_and_balanced_window(filename: str) 
     assert len(train) == 56
     assert len(holdout) == 2
     assert train.groupby(train.index.dayofweek).size().tolist() == [8] * 7
+
+
+def test_diagnostic_backend_cannot_reverse_primary_stability_gate() -> None:
+    stability = {
+        "sktime": {"minus_7": {"stable": True}, "minus_14": {"stable": True}},
+        "statsforecast": {"minus_7": {"stable": True}, "minus_14": {"stable": False}},
+    }
+
+    assert primary_stability_gate(stability) is True
