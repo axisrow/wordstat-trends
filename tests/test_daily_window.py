@@ -19,7 +19,8 @@ from wordstat_trends.daily_window import (
 )
 from wordstat_trends.dynamics_io import load_dynamics
 
-HEADER = "Период;Число запросов;Доля от всех запросов, %;Динамика ... 21.08.2026;"
+# Заголовок дневной выгрузки: первая колонка «Дата», не «Период».
+HEADER = "Дата;Число запросов;Доля от всех запросов, %;Динамика ... 21.08.2026;"
 
 
 def write_daily(path: Path, start: str, days: int, *, skip: set[int] = frozenset()) -> Path:
@@ -55,6 +56,16 @@ def test_daily_parser_rejects_russian_month(tmp_path):
     path = tmp_path / "d.csv"
     path.write_bytes((f"{HEADER}\rавгуст 2024;500;0,001;\r").encode("utf-8-sig"))
     with pytest.raises(ValueError, match="DD.MM.YYYY"):
+        load_dynamics(path, granularity="daily")
+
+
+def test_daily_rejects_monthly_header(tmp_path):
+    """«Период» — месячный заголовок; дневная выгрузка называет колонку «Дата»."""
+    path = tmp_path / "d.csv"
+    path.write_bytes(
+        ("Период;Число запросов;Доля;\r23.06.2026;1;0,1;\r").encode("utf-8-sig")
+    )
+    with pytest.raises(ValueError, match="заголовок"):
         load_dynamics(path, granularity="daily")
 
 
