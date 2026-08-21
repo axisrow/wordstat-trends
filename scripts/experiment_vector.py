@@ -81,6 +81,9 @@ def read_dynamics_csv(path: Path) -> DemandSeries:
     )
     if values.index.has_duplicates or not values.index.is_monotonic_increasing:
         raise ValueError(f"{path}: periods must be unique and ordered")
+    expected_index = pd.period_range(values.index[0], values.index[-1], freq="M")
+    if not values.index.equals(expected_index):
+        raise ValueError(f"{path}: monthly periods must be continuous")
     return DemandSeries(phrase=phrase_match.group(1), values=values)
 
 
@@ -109,6 +112,17 @@ def fit_monthly_vector(values: pd.Series) -> DemandVector:
 
 def format_number(value: float) -> str:
     return f"{value:.2f}"
+
+
+def compare_vectors(full: DemandVector, shortened: DemandVector) -> tuple[float, float, float]:
+    """Return level, trend, and seasonal-profile drift relative to the full vector."""
+    level_drift = abs(shortened.level - full.level) / max(abs(full.level), 1.0)
+    trend_drift = abs(shortened.trend - full.trend) / max(abs(full.level), 1.0)
+    seasonal_rmse = (
+        sum((shortened.seasonal[month] - full.seasonal[month]) ** 2 for month in MONTH_LABELS) / len(MONTH_LABELS)
+    ) ** 0.5
+    seasonal_drift = seasonal_rmse / max(max(full.seasonal.values()) - min(full.seasonal.values()), 1.0)
+    return level_drift, trend_drift, seasonal_drift
 
 
 def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
@@ -146,24 +160,15 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
     for phrase, points, removed, status, _ in rows:
         report.append(f"| {phrase} | {points} | {removed} | {status} |")
 
-    report.extend(
-        [
-            "",
-            "Полный ряд (24 точки, два годовых цикла) модель обучает. Но ряды в 21 и 18 точек не обучаются: "
-            "`statsmodels` требует минимум два полных сезонных цикла для инициализации сезонных состояний. "
-            "Поэтому численно сравнить полный вектор с версиями `−3` и `−6` месяцев нельзя.",
-            "",
-            "## Векторы полного ряда (24 точки)",
-            "",
-        ]
-    )
+    failed_rows = [row for row in rows if row[-1] is None]
+    report.extend(["", "## Векторы", ""])
     for phrase, points, removed, _, vector in rows:
-        if removed or vector is None:
+        if vector is None:
             continue
         seasonal = ", ".join(f"{month}: {format_number(vector.seasonal[month])}" for month in MONTH_LABELS)
         report.extend(
             [
-                f"### {phrase}",
+                f"### {phrase} ({points} точек, удалено: {removed})",
                 "",
                 f"- AIC: {format_number(vector.aic)}",
                 f"- уровень: {format_number(vector.level)}",
@@ -173,24 +178,70 @@ def render_report(series_by_file: list[tuple[Path, DemandSeries]]) -> str:
             ]
         )
 
+    if not failed_rows:
+        report.extend(
+            [
+                "## Численное сравнение с полным вектором",
+                "",
+                "Сезонный дрейф — RMSE 12 сезонных коэффициентов, делённый на размах сезонного профиля полного ряда. "
+                "Дрейф тренда нормирован на уровень полного ряда.",
+                "",
+                "| Фраза | Удалено | Дрейф уровня | Дрейф тренда | Дрейф сезонного профиля |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for _, series in series_by_file:
+            vectors = {removed: vector for phrase, _, removed, _, vector in rows if phrase == series.phrase}
+            full = vectors[0]
+            assert full is not None
+            for removed in (3, 6):
+                shortened = vectors[removed]
+                assert shortened is not None
+                level, trend, seasonal = compare_vectors(full, shortened)
+                report.append(
+                    f"| {series.phrase} | {removed} | {level:.4f} | {trend:.4f} | {seasonal:.4f} |"
+                )
+        report.append("")
+
     report.extend(
         [
             "## Вывод",
             "",
-            "**Стоп-условие MVP сработал: гипотеза на этих фикстурах не подтверждена.** "
-            "Это не измеренный провал коэффициентов, а более ранняя и жёсткая граница: при 24 точках "
-            "нельзя выполнить обязательную проверку устойчивости после усечения на 3 или 6 месяцев. "
-            "Следовательно, нельзя честно переходить к проверке осмысленности кластеров или к продуктовой реализации.",
-            "",
-            "## Чего проверить не удалось",
-            "",
-            "- Устойчивость вектора при усечении `−3` и `−6` месяцев — отсутствуют два полных годовых цикла.",
-            "- Различение сезонного и плоского профилей — не запускалось, так как оно следует после устойчивости.",
-            "- Недельный профиль `sp=7` — нет дневного ряда; он вне объёма этого MVP.",
-            "",
-            "Для повторного MVP нужен склеенный ряд из #6 достаточной длины: после удаления шести месяцев в нём "
-            "должны оставаться как минимум 24 месячные точки. Практически это означает не менее 30 точек до усечения; "
-            "более длинный ряд нужен и для содержательной, а не минимально допустимой, оценки сезонности.",
+        ]
+    )
+    if failed_rows:
+        report.extend(
+            [
+                "**Стоп-условие MVP сработал: гипотеза на этих фикстурах не подтверждена.** "
+                "Это не измеренный провал коэффициентов, а более ранняя и жёсткая граница: при 24 точках "
+                "нельзя выполнить обязательную проверку устойчивости после усечения на 3 или 6 месяцев. "
+                "Следовательно, нельзя честно переходить к проверке осмысленности кластеров "
+                "или к продуктовой реализации.",
+                "",
+                "## Чего проверить не удалось",
+                "",
+                "- Устойчивость вектора при усечении `−3` и `−6` месяцев — отсутствуют два полных годовых цикла.",
+                "- Различение сезонного и плоского профилей — не запускалось, так как оно следует после устойчивости.",
+                "- Недельный профиль `sp=7` — нет дневного ряда; он вне объёма этого MVP.",
+                "",
+                "Для повторного MVP нужен склеенный ряд из #6 достаточной длины: после удаления шести месяцев в нём "
+                "более длинный ряд нужен и для содержательной, а не минимально допустимой, оценки сезонности.",
+                "должны оставаться как минимум 24 месячные точки. Практически это означает "
+                "не менее 30 точек до усечения; более длинный ряд нужен и для содержательной, "
+                "а не минимально допустимой, оценки сезонности.",
+                "более длинный ряд нужен и для содержательной, а не минимально допустимой, оценки сезонности.",
+            ]
+        )
+    else:
+        report.extend(
+            [
+                "Усечённые ряды обучились и численное сравнение выполнено. Интерпретация величины дрейфа "
+                "и решение о переходе к кластеризации остаются отдельным шагом; этот скрипт не объявляет "
+                "гипотезу успешной автоматически.",
+            ]
+        )
+    report.extend(
+        [
             "",
             "## Воспроизведение",
             "",

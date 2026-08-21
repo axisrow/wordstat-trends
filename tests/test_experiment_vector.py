@@ -41,6 +41,20 @@ def test_rejects_duplicate_periods(tmp_path):
         experiment.read_dynamics_csv(path)
 
 
+def test_rejects_missing_month(tmp_path):
+    experiment = load_experiment_module()
+    path = tmp_path / "gap.csv"
+    path.write_text(
+        "Период;Число запросов;Динамика «фраза»\r"
+        "январь 2026;1;\r"
+        "март 2026;2;\r",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="monthly periods must be continuous"):
+        experiment.read_dynamics_csv(path)
+
+
 @pytest.mark.parametrize("removed_months", [3, 6])
 def test_shortened_monthly_series_cannot_initialize_two_seasonal_cycles(removed_months):
     experiment = load_experiment_module()
