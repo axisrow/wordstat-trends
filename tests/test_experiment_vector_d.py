@@ -42,6 +42,26 @@ def test_load_dynamics_csv_parses_all_fixtures(path: Path):
     assert (series > 0).all()
 
 
+def test_load_dynamics_csv_rejects_duplicate_and_missing_month(tmp_path: Path):
+    # Регрессия (Codex, цикл 3): парсер сортировал периоды, но не проверял
+    # уникальность/непрерывность — CSV с пропущенным месяцем и дубликатом
+    # другого месяца тихо давал 4 "валидные" строки на неверной временной
+    # оси (октябрь пропущен, сентябрь задублирован), которую AutoETS затем
+    # интерпретирует как регулярный ряд по позиции, а не по календарю.
+    content = (
+        "﻿Период;Число запросов;Доля от всех запросов, %;заголовок\r"
+        "август 2024;1000;0,01;\r"
+        "сентябрь 2024;1001;0,01;\r"
+        "сентябрь 2024;1002;0,01;\r"
+        "ноябрь 2024;1003;0,01;\r"
+    )
+    path = tmp_path / "broken.csv"
+    path.write_bytes(content.encode("utf-8"))
+
+    with pytest.raises(ValueError, match="[Дд]убликат"):
+        load_dynamics_csv(path)
+
+
 def test_load_dynamics_csv_seasonal_peak_in_december():
     # «Новогодние подарки»: пик спроса — декабрь 2024, известен из docs/DATA.md.
     series = load_dynamics_csv(FIXTURES["seasonal (новогодние подарки)"])

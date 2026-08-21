@@ -180,6 +180,14 @@ def load_dynamics_csv(path: Path) -> pd.Series:
     periods, counts = zip(*records, strict=True)
     series = pd.Series(counts, index=pd.PeriodIndex(periods, freq="M"), name="count")
     series = series.sort_index()
+
+    if not series.index.is_unique:
+        raise ValueError(f"Дубликаты месяцев в {path}: {series.index[series.index.duplicated()].tolist()}")
+    expected = pd.period_range(start=series.index.min(), end=series.index.max(), freq="M")
+    if not series.index.equals(expected):
+        missing = expected.difference(series.index)
+        raise ValueError(f"Пропуски месяцев (непрерывность нарушена) в {path}: {missing.tolist()}")
+
     return series
 
 
