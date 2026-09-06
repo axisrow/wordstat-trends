@@ -204,7 +204,8 @@ def load_daily_dynamics_csv(path: Path) -> pd.Series:
       даты берутся из строк данных, заголовок графика не используется как
       источник дат.
     Остальная механика формата совпадает с месячным парсером: BOM, CR-only
-    переводы строк, разделитель ";", пробел как разделитель тысяч.
+    переводы строк, разделитель ";", пробел как разделитель тысяч; как и
+    месячный, проверяет уникальность и непрерывность дат целиком по файлу.
     """
     lines = _read_raw_csv_lines(path)
 
@@ -224,6 +225,19 @@ def load_daily_dynamics_csv(path: Path) -> pd.Series:
     periods, counts = zip(*records, strict=True)
     series = pd.Series(counts, index=pd.PeriodIndex(periods, freq="D"), name="count")
     series = series.sort_index()
+
+    # Та же проверка целостности временной оси, что в месячном парсере
+    # (load_dynamics_csv) — внутри самой функции загрузки, на всём файле
+    # (включая holdout-хвост), а не только в вызывающем коде на train-окне
+    # (issue #33, находка 5). check_weekday_balance() остаётся отдельной
+    # дополнительной проверкой распределения по дням недели.
+    if not series.index.is_unique:
+        raise ValueError(f"Дубликаты дат в {path}: {series.index[series.index.duplicated()].tolist()}")
+    expected = pd.period_range(start=series.index.min(), end=series.index.max(), freq="D")
+    if not series.index.equals(expected):
+        missing = expected.difference(series.index)
+        raise ValueError(f"Пропуски дат (непрерывность нарушена) в {path}: {missing.tolist()}")
+
     return series
 
 
@@ -285,6 +299,25 @@ class ParamVector:
         }
 
 
+def _fit_autoets(series: pd.Series, sp: int = 12, information_criterion: str = "aic"):
+    """Зафитить AutoETS(auto=True, sp=sp) на ряде и вернуть fitted-модель
+    (statsmodels ETSResults через приватный атрибут sktime). Выделено из
+    fit_autoets_vector, чтобы диагностические функции могли переиспользовать
+    уже посчитанный фит вместо дублирующего рефита (issue #33, находка 3).
+    """
+    from sktime.forecasting.ets import AutoETS
+
+    y = series.reset_index(drop=True).astype(float)
+    y.index = pd.RangeIndex(len(y))
+
+    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion=information_criterion)
+    forecaster.fit(y)
+
+    # Приватный атрибут sktime — единственный способ достать вектор параметров
+    # ETS (level/trend/seasonal), а не только точечный прогноз.
+    return forecaster._fitted_forecaster  # type: ignore[attr-defined]  # statsmodels ETSResults
+
+
 def fit_autoets_vector(
     series: pd.Series, sp: int = 12, information_criterion: str = "aic", calendar_anchor: str = "month"
 ) -> ParamVector:
@@ -302,17 +335,20 @@ def fit_autoets_vector(
     этом случае остаётся выровненным просто "с конца ряда назад", без
     привязки к календарю (используйте только для sp из {7, 12}).
     """
-    from sktime.forecasting.ets import AutoETS
+    return vector_from_fitted(
+        _fit_autoets(series, sp=sp, information_criterion=information_criterion),
+        series,
+        sp=sp,
+        calendar_anchor=calendar_anchor,
+    )
 
-    y = series.reset_index(drop=True).astype(float)
-    y.index = pd.RangeIndex(len(y))
 
-    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion=information_criterion)
-    forecaster.fit(y)
-
-    # Приватный атрибут sktime — единственный способ достать вектор параметров
-    # ETS (level/trend/seasonal), а не только точечный прогноз.
-    fitted = forecaster._fitted_forecaster  # type: ignore[attr-defined]  # statsmodels ETSResults
+def vector_from_fitted(fitted, series: pd.Series, sp: int = 12, calendar_anchor: str = "month") -> ParamVector:
+    """Извлечь ParamVector из УЖЕ зафиченной модели (см. _fit_autoets) —
+    без повторного фита. Ряд нужен только для календарного якоря последней
+    точки. Логика извлечения прежняя (fit_autoets_vector), вынесена, чтобы
+    полный фит в main() переиспользовался диагностикой (issue #33, находка 3).
+    """
     states = fitted.states  # DataFrame с одной строкой на точку ряда: level, [trend], [seasonal]
 
     model = fitted.model  # ETSModel: хранит выбранную спецификацию error/trend/seasonal
@@ -368,11 +404,16 @@ def truncate_series(series: pd.Series, drop_last: int) -> pd.Series:
     return series.iloc[:-drop_last]
 
 
-def compare_seasonal_cycles_within_full_series(series: pd.Series, sp: int = 12) -> dict:
+def compare_seasonal_cycles_within_full_series(series: pd.Series, sp: int = 12, fitted_forecaster=None) -> dict:
     """Дополнительное (не требующее рефита) измерение устойчивости: сравнить
     сезонный коэффициент цикла 1 (первые sp строк states — 2024-08..2025-07)
     и цикла 2 (последние sp строк — 2025-08..2026-07) внутри ОДНОГО фита на
     полном 24-точечном ряде.
+
+    fitted_forecaster — результат _fit_autoets на том же ряде, если он уже
+    посчитан вызывающим кодом (main() фитит тот же ряд для full_vector):
+    переиспользуется вместо дублирующего рефита (issue #33, находка 3). Без
+    него (None) функция фитит сама — самостоятельный запуск диагностики.
 
     Не заменяет проверку "пересчитать вектор на укороченном ряде" (пункт 2/3
     issue #23) — это она физически неисполнима на 24 точках (см. отчёт).
@@ -382,16 +423,10 @@ def compare_seasonal_cycles_within_full_series(series: pd.Series, sp: int = 12) 
     что даже совпадение циклов 1 и 2 не отменяет вывод о непроверяемости
     внешней устойчивости (рефит на других данных).
     """
-    from sktime.forecasting.ets import AutoETS
-
     if len(series) < 2 * sp:
         return {"error": f"нужно >= {2 * sp} точек, есть {len(series)}"}
 
-    y = series.reset_index(drop=True).astype(float)
-    y.index = pd.RangeIndex(len(y))
-    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion="aic")
-    forecaster.fit(y)
-    fitted = forecaster._fitted_forecaster  # type: ignore[attr-defined]
+    fitted = fitted_forecaster if fitted_forecaster is not None else _fit_autoets(series, sp=sp)
 
     if "seasonal" not in fitted.states.columns or len(fitted.states) < 2 * sp:
         return {"error": "seasonal state недоступен или короче 2*sp"}
@@ -427,11 +462,14 @@ def compare_vectors(full: ParamVector, other: ParamVector) -> dict:
     "стабильно", хотя фактически сезонность не сравнивалась вовсе).
 
     Внимание: MAE и относительный MAE сравнимы только если оба вектора
-    получены с одинаковой параметризацией (mul vs add) — сравнение
-    мультипликативных коэффициентов (в районе 1.0) с аддитивными сдвигами
-    (в единицах ряда) даёт формально исчисляемое, но содержательно
-    бессмысленное число. model_spec обоих векторов нужно проверять
-    отдельно; сравнение вслепую по этому полю не производится.
+    получены с одинаковой параметризацией сезонной компоненты (mul vs add) —
+    сравнение мультипликативных коэффициентов (в районе 1.0) с аддитивными
+    сдвигами (в единицах ряда) даёт формально исчисляемое, но содержательно
+    бессмысленное число. Поэтому seasonal_spec_compatible проверяет
+    совпадение сезонного компонента model_spec ("error/trend/SEASONAL[/damped]",
+    третий слот) обоих векторов; при несовпадении сезонные метрики
+    неприменимы, и is_comparison_unstable трактует это как нестабильность
+    (issue #33, находка 4).
     """
     level_diff = other.level - full.level
     level_rel = level_diff / full.level if full.level != 0 else float("nan")
@@ -439,6 +477,10 @@ def compare_vectors(full: ParamVector, other: ParamVector) -> dict:
     trend_diff = other.trend - full.trend
 
     both_seasonal = full.has_seasonal and other.has_seasonal
+    # Совпадение сезонного компонента спецификации (mul vs add); полные
+    # model_spec могут расходиться в error/trend/damped — это на сезонные
+    # метрики не влияет.
+    seasonal_spec_compatible = full.model_spec.split("/")[2] == other.model_spec.split("/")[2]
     seasonal_corr = float(np.corrcoef(full.seasonal, other.seasonal)[0, 1]) if both_seasonal else float("nan")
     seasonal_mae = float(np.mean(np.abs(full.seasonal - other.seasonal))) if both_seasonal else float("nan")
     seasonal_full_range = float(full.seasonal.max() - full.seasonal.min()) if both_seasonal else 0.0
@@ -451,6 +493,7 @@ def compare_vectors(full: ParamVector, other: ParamVector) -> dict:
         "level_diff_rel": round(float(level_rel), 6),
         "trend_diff_abs": round(float(trend_diff), 6),
         "both_seasonal": both_seasonal,
+        "seasonal_spec_compatible": seasonal_spec_compatible,
         "seasonal_corr": round(seasonal_corr, 6),
         "seasonal_mae": round(seasonal_mae, 6),
         "seasonal_mae_rel_to_full_range": round(seasonal_mae_rel, 6),
@@ -477,6 +520,12 @@ def run_stability_check(
       устойчивость НЕ измерена, это не то же самое, что "коэффициенты уплыли".
     - unstable: модель зафиттилась, но разница с полным рядом велика —
       это и есть "заметный дрейф" из формулировки issue #23.
+
+    Ловится только ValueError — ожидаемый класс отказа AutoETS.fit() на
+    слишком коротком ряде (issue #33, находка 2). Баги в последующих
+    to_dict()/compare_vectors (KeyError, несовместимость shape) — это дефект
+    кода, а не экспериментальная данность: они пробрасываются наружу, а не
+    репортятся как not_measurable.
     """
     result: dict = {"label": label, "n_points_full": len(series), "vector_full": full_vector.to_dict()}
 
@@ -486,12 +535,14 @@ def run_stability_check(
         entry: dict = {"n_points": n}
         try:
             truncated_vector = fit_autoets_vector(truncated, sp=sp, calendar_anchor=calendar_anchor)
-            entry["vector"] = truncated_vector.to_dict()
-            entry["comparison_vs_full"] = compare_vectors(full_vector, truncated_vector)
-            entry["outcome"] = "measured"
-        except Exception as exc:  # noqa: BLE001 — репортим отказ модели как данные MVP
+        except ValueError as exc:  # ожидаемый отказ модели, не баг кода
             entry["error"] = f"{type(exc).__name__}: {exc}"
             entry["outcome"] = "not_measurable"
+            result[f"truncated_minus_{drop}"] = entry
+            continue
+        entry["vector"] = truncated_vector.to_dict()
+        entry["comparison_vs_full"] = compare_vectors(full_vector, truncated_vector)
+        entry["outcome"] = "measured"
         result[f"truncated_minus_{drop}"] = entry
 
     return result
@@ -644,11 +695,20 @@ def is_comparison_unstable(comparison: dict, thresholds: dict) -> bool:
     сезонность заявленно есть на полном ряде, но не воспроизводится на
     укороченном (или наоборот), значит вектор параметров модели не
     устойчив в заявленном виде.
+
+    seasonal_spec_compatible=False (mul vs add сезонная компонента между
+    full и other, см. compare_vectors) — тоже нестабильность: сезонные
+    метрики при несовпадении параметризации формально исчислимы, но
+    несопоставимы (артефакт разных шкал, а не дрейф профиля), поэтому
+    сравнение считается неприменимым, аналогично both_seasonal=False
+    (issue #33, находка 4).
     """
     level_diff_rel = comparison["level_diff_rel"]
     if math.isnan(level_diff_rel) or abs(level_diff_rel) > thresholds["max_level_diff_rel_abs"]:
         return True
     if not comparison["both_seasonal"]:
+        return True
+    if not comparison["seasonal_spec_compatible"]:
         return True
     seasonal_corr = comparison["seasonal_corr"]
     if math.isnan(seasonal_corr) or seasonal_corr < thresholds["min_seasonal_corr"]:
@@ -669,11 +729,16 @@ def main() -> int:
 
     for label, path in FIXTURES.items():
         series = load_dynamics_csv(path)
-        full_vector = fit_autoets_vector(series)
+        # Один фит на фикстуру: full_vector и within_series-диагностика
+        # переиспользуют один и тот же fitted (issue #33, находка 3).
+        fitted = _fit_autoets(series)
+        full_vector = vector_from_fitted(fitted, series, sp=12, calendar_anchor="month")
         full_vectors[label] = full_vector
 
         stability = run_stability_check(series, label, full_vector)
-        stability["within_series_cycle_comparison"] = compare_seasonal_cycles_within_full_series(series)
+        stability["within_series_cycle_comparison"] = compare_seasonal_cycles_within_full_series(
+            series, fitted_forecaster=fitted
+        )
         stability["statsforecast_cross_check"] = {
             f"drop_{drop}": check_statsforecast_model_choice(truncate_series(series, drop)) for drop in (0, 3, 6)
         }
@@ -704,7 +769,11 @@ def main() -> int:
         report["discrimination"] = "SKIPPED — стоп-условие устойчивости сработало (пункт 2 issue #23)"
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    # Exit code — machine-readable контракт (issue #33, находка 1): сработавшее
+    # стоп-условие устойчивости обязано давать ненулевой код, чтобы
+    # автоматизация (CI-проверка гипотезы, gate) не считала прогон успешным,
+    # парся JSON ради единственного флага.
+    return 1 if stop_condition_triggered else 0
 
 
 def main_daily() -> int:
@@ -811,7 +880,8 @@ def main_daily() -> int:
         report["discrimination"] = "SKIPPED — стоп-условие устойчивости сработало (см. предрегистрацию)"
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    # Тот же контракт, что в main() (issue #33, находка 1).
+    return 1 if stop_condition_triggered else 0
 
 
 if __name__ == "__main__":
