@@ -63,57 +63,63 @@ def sktime_has_seasonal(y: pd.Series, ic: str) -> tuple[bool, str]:
 def statsmodels_grid(y: np.ndarray) -> list[dict]:
     """Перебор допустимых спецификаций ETS на ряде y (restrict-правила как в auto).
 
-    k = len(res.params) — тот же подсчёт, что в AIC/AICc самого statsmodels
-    (включая начальные состояния и sigma2).
+    Сетка повторяет sktime AutoETS(auto=True) с дефолтами (allow_multiplicative_
+    trend=False, restrict=True): error add/mul, trend add/None, seasonal
+    add/mul/None, damped True/False (не бывает при trend=None); при
+    аддитивной ошибке мультипликативные компоненты запрещены. AIC/AICc/BIC —
+    собственные значения statsmodels (k = df_model = len(params) + 1,
+    включая sigma2).
     """
-    n = len(y)
     out = []
-    for error in ["add", "mul"]:
+    positive = bool((y > 0).all())
+    errors = ["add", "mul"] if positive else ["add"]
+    seasonals = [None, "add", "mul"] if positive else [None, "add"]
+    for error in errors:
         for trend in [None, "add"]:
-            for seasonal in [None, "add", "mul"]:
+            for seasonal in seasonals:
                 if error == "add" and seasonal == "mul":
                     continue
-                if error == "mul" and trend == "add" and seasonal == "mul":
-                    continue
-                spec = (
-                    f"{error[0].upper()}"
-                    f"{'A' if trend else 'N'}"
-                    f"{'A' if seasonal == 'add' else ('M' if seasonal == 'mul' else 'N')}"
-                )
-                try:
-                    m = ETSModel(
-                        y,
-                        error=error,
-                        trend=trend,
-                        seasonal=seasonal,
-                        seasonal_periods=SP if seasonal else None,
-                        initialization_method="estimated",
+                for damped in [False, True]:
+                    if trend is None and damped:
+                        continue
+                    spec = (
+                        f"{error[0].upper()}"
+                        f"{'A' if trend else 'N'}"
+                        f"{'d' if damped else ''}"
+                        f"{'A' if seasonal == 'add' else ('M' if seasonal == 'mul' else 'N')}"
                     )
-                    res = m.fit(disp=False)
-                    ll = res.llf
-                    k = len(res.params)
-                    aic = -2 * ll + 2 * k
-                    denom = n - k - 1
-                    aicc = aic + (2 * k * (k + 1) / denom if denom > 0 else np.nan)
-                    bic = -2 * ll + k * np.log(n)
-                    out.append(
-                        {
-                            "spec": spec,
-                            "seasonal": seasonal is not None,
-                            "loglik": ll,
-                            "k": k,
-                            "aic": aic,
-                            "aicc": aicc,
-                            "bic": bic,
-                        }
-                    )
-                except Exception as exc:  # noqa: BLE001 — фиксируем и недопустимые фиты
-                    out.append({"spec": spec, "error": str(exc)[:60]})
+                    try:
+                        m = ETSModel(
+                            y,
+                            error=error,
+                            trend=trend,
+                            damped_trend=damped,
+                            seasonal=seasonal,
+                            seasonal_periods=SP if seasonal else None,
+                            initialization_method="estimated",
+                        )
+                        res = m.fit(disp=False)
+                        out.append(
+                            {
+                                "spec": spec,
+                                "seasonal": seasonal is not None,
+                                "loglik": res.llf,
+                                "k": res.df_model,
+                                "aic": res.aic,
+                                "aicc": res.aicc,
+                                "bic": res.bic,
+                            }
+                        )
+                    except Exception as exc:  # noqa: BLE001 — фиксируем и недопустимые фиты
+                        out.append({"spec": spec, "error": str(exc)[:60]})
     return out
 
 
 def best_of(grid: list[dict], seasonal: bool, key: str) -> dict:
     ok = [g for g in grid if key in g and g["seasonal"] is seasonal]
+    if not ok:
+        label = "сезонной" if seasonal else "несезонной"
+        raise ValueError(f"нет сошедшихся фитов в группе ({label}, {key})")
     return min(ok, key=lambda g: g[key])
 
 
@@ -192,20 +198,26 @@ for name, path in FIXTURES.items():
     for cond, gen_fn in conditions.items():
         flips = {"aicc": 0, "aic": 0}
         seas56 = {"aicc": 0, "aic": 0}
+        seas42 = {"aicc": 0, "aic": 0}
         for _ in range(N_REPS):
+            # 42-дневное окно — усечение того же 56-дневного ряда
+            # (конвенция MVP #23), а не независимый розыгрыш.
             s56 = pd.Series(gen_fn(56, rng))
-            s42 = pd.Series(gen_fn(42, rng))
+            s42 = s56.iloc[:42]
             for ic in ["aicc", "aic"]:
                 hs = {}
                 for w, s in [(56, s56), (42, s42)]:
                     hs[w], _ = sktime_has_seasonal(s.astype(float), ic)
                 if hs[56]:
                     seas56[ic] += 1
+                if hs[42]:
+                    seas42[ic] += 1
                 if hs[56] != hs[42]:
                     flips[ic] += 1
         sim[name][cond] = {
             "n_reps": N_REPS,
             "has_seasonal_at_56": seas56,
+            "has_seasonal_at_42": seas42,
             "structure_flip_56_to_42": flips,
         }
         print(name, cond, sim[name][cond])
