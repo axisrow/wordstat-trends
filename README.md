@@ -1,5 +1,7 @@
 # wordstat-trends
 
+[![CI](https://github.com/axisrow/wordstat-trends/actions/workflows/ci.yml/badge.svg)](https://github.com/axisrow/wordstat-trends/actions/workflows/ci.yml)
+
 Витрина трендов поискового спроса Рунета на данных Яндекс Вордстат.
 
 > **Статус: проектирование.** Кода пока нет — есть
@@ -33,6 +35,11 @@
 
 LLM допустим за пределами пайплайна, но ни одно число, ни один кластер, ни один
 тренд не получаются его вызовом.
+
+Принцип охраняется механически: CI-гейт (`scripts/check_no_llm.py`) валит
+сборку, если в дереве зависимостей (`uv.lock`) появился LLM-клиент —
+`openai`, `anthropic`, `langchain`, `gigachat` и другие (issue
+[#4](https://github.com/axisrow/wordstat-trends/issues/4)).
 
 ## Как устроено
 
