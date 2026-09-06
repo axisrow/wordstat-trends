@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # Гейт «без LLM» идёт до установки зависимостей: скрипту нужен только
+      # uv.lock и stdlib, падать он должен за секунды (issue #4).
+      - name: Гейт «без LLM» (uv.lock)
+        run: uv run --no-sync python scripts/check_no_llm.py
+
+      # dev = pytest + ruff; extra nlp (torch ~2 ГБ) тестам не нужен.
+      - name: Установить зависимости
+        run: uv sync --extra dev
+
+      - name: ruff
+        run: uv run ruff check .
+
+      # `python -m pytest`, не `pytest`: тесты импортируют scripts.* —
+      # cwd должен быть на sys.path.
+      - name: pytest
+        run: uv run python -m pytest -q
