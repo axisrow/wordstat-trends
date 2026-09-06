@@ -104,12 +104,41 @@ def test_prefix_pattern_matches_family():
     assert find_violations(lock) == ["langchain-some-new-addon"]
 
 
+def test_root_dev_and_extra_dependencies_are_violations():
+    # uv.lock хранит dev/extra-зависимости корня не в dependencies, а в
+    # [package.optional-dependencies] и [package.metadata].requires-dist:
+    # LLM-клиент из extra попадает в окружение через uv sync --extra,
+    # поэтому гейт ловит его наравне с основными зависимостями.
+    lock = {
+        "package": [
+            {
+                "name": "wordstat-trends",
+                "version": "0.0.0",
+                "dependencies": [{"name": "sktime"}],
+                "optional-dependencies": {"dev": [{"name": "gigachat"}]},
+                "metadata": {
+                    "requires-dist": [
+                        {"name": "sktime"},
+                        {"name": "openai", "marker": "extra == 'dev'"},
+                    ]
+                },
+            },
+            {"name": "sktime", "version": "1.1.0"},
+            {"name": "gigachat", "version": "0.0.0"},
+            {"name": "openai", "version": "0.0.0"},
+        ]
+    }
+    assert find_violations(lock) == ["gigachat", "openai"]
+
+
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
         ("OpenAI", "openai"),
         ("LangChain_Community", "langchain-community"),
         ("Zhipu.AI", "zhipu-ai"),
+        ("zhipu..ai", "zhipu-ai"),
+        ("Open_AI.tools", "open-ai-tools"),
     ],
 )
 def test_normalize_pep503(name: str, expected: str):
@@ -183,3 +212,18 @@ def test_main_exit_codes(tmp_path: Path):
         check=False,
     )
     assert missing.returncode == 2
+
+
+def test_lock_without_root_package_fails_loudly(tmp_path: Path):
+    # Регрессия fail-open: без корневого пакета reachable пуст и гейт молча
+    # печатал бы OK при любом содержимом lock. Теперь — exit 2 и сообщение,
+    # а не зелёный прогон.
+    script = Path(__file__).resolve().parent.parent / "scripts" / "check_no_llm.py"
+    rootless = tmp_path / "rootless.lock"
+    rootless.write_text('[[package]]\nname = "sktime"\nversion = "1.1.0"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(rootless)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 2
+    assert "wordstat-trends" in result.stderr

@@ -5,7 +5,9 @@
 Установка LLM-клиента в окружение проекта размывает этот принцип, даже если
 код его пока не использует, — поэтому проверяется **разрешённое дерево**
 (uv.lock), а не только прямые зависимости pyproject.toml: транзитивная
-зависимость протаскивает LLM-клиент так же надёжно.
+зависимость протаскивает LLM-клиент так же надёжно. Dev- и extra-зависимости
+корня проверяются наравне с основными: `uv sync --extra` ставит их в то же
+окружение.
 
 Запуск: `python scripts/check_no_llm.py [путь/к/uv.lock]` (из корня репо путь
 можно не указывать). Нужен только stdlib (`tomllib`) — шаг гейта в CI идёт
@@ -25,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -76,8 +79,8 @@ ISSUE_URL = "https://github.com/axisrow/wordstat-trends/issues/4"
 
 
 def normalize(name: str) -> str:
-    """PEP 503: нижний регистр, `-`, `_`, `.` -> `-`."""
-    return name.strip().lower().replace("_", "-").replace(".", "-")
+    """PEP 503: нижний регистр, повторяющиеся `-`/`_`/`.` -> один дефис."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
 
 
 def is_forbidden(package: str) -> bool:
@@ -92,12 +95,36 @@ def is_forbidden(package: str) -> bool:
     return False
 
 
+def root_declared_deps(entry: dict) -> list[str]:
+    """Имена dev/extra-зависимостей корневого пакета из его записи в lock.
+
+    В uv.lock они не попадают в dependencies корня: extra-зависимости лежат
+    в [package.optional-dependencies], полный список объявленных требований
+    со всеми маркерами — в [package.metadata] requires-dist. Без них гейт
+    пропустил бы LLM-клиент, добавленный в extra, хотя `uv sync --extra`
+    ставит его прямо в CI-окружение.
+    """
+    names = [
+        normalize(req["name"])
+        for req in entry.get("metadata", {}).get("requires-dist", [])
+        if "name" in req
+    ]
+    for group in entry.get("optional-dependencies", {}).values():
+        names.extend(normalize(dep["name"]) for dep in group)
+    return names
+
+
 def build_graph(lock: dict) -> dict[str, list[str]]:
     """uv.lock -> {имя пакета: [имена прямых зависимостей]}."""
     graph: dict[str, list[str]] = {}
     for entry in lock.get("package", []):
         name = normalize(entry["name"])
         deps = [normalize(dep["name"]) for dep in entry.get("dependencies", [])]
+        # Только у корня: в lock у сторонних пакетов тоже бывают
+        # optional-dependencies, но их extras по умолчанию не ставятся —
+        # идти по ним значило бы проверять недостижимое.
+        if name == ROOT_PACKAGE:
+            deps.extend(root_declared_deps(entry))
         # Одно имя может встретиться несколько раз (маркеры платформ) — объединяем.
         graph[name] = sorted(set(graph.get(name, [])) | set(deps))
     return graph
@@ -109,8 +136,16 @@ def reachable_without_allowlist(graph: dict[str, list[str]]) -> set[str]:
     Поддерево разрешённого корня отсекается целиком: его содержимое недостижимо
     «напрямую», и именно поэтому там LLM-клиенты не нарушают принцип.
     """
+    if ROOT_PACKAGE not in graph:
+        # Fail-open здесь навсегда спрятал бы гейт: пустой reachable даёт OK
+        # при любом содержимом lock. Громко падаем — main() разведёт это в
+        # exit 2, отличая от нарушения (exit 1).
+        raise ValueError(
+            f"корневой пакет {ROOT_PACKAGE} не найден в lock — "
+            "переименован в pyproject.toml или передан чужой файл"
+        )
     seen: set[str] = set()
-    stack = [ROOT_PACKAGE] if ROOT_PACKAGE in graph else []
+    stack = [ROOT_PACKAGE]
     while stack:
         node = stack.pop()
         if node in seen or node in ALLOWED_SUBTREES:
@@ -144,7 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no-llm: {args.lock} не найден — гейт не смог проверить зависимости", file=sys.stderr)
         return 2
 
-    violations = find_violations(load_lock(args.lock))
+    try:
+        violations = find_violations(load_lock(args.lock))
+    except ValueError as error:
+        print(f"no-llm: {error}", file=sys.stderr)
+        return 2
+
     if not violations:
         print(f"no-llm: OK — запрещённых LLM-пакетов в {args.lock.name} нет")
         return 0
