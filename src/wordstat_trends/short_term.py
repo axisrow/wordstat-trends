@@ -110,6 +110,8 @@ def load_daily_snapshot(path: Path) -> DailySnapshot:
         count = float(fields[1].replace(" ", "").replace(" ", ""))
         records.append((period, count))
 
+    if not records:
+        raise ValueError(f"Нет строк данных после заголовка в {path}")
     periods, counts = zip(*records, strict=True)
     series = pd.Series(counts, index=pd.PeriodIndex(periods, freq="D"), name="count")
     series = series.sort_index()

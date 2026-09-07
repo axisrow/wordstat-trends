@@ -52,6 +52,14 @@ class TestLoadDailySnapshot:
         snapshot = load_daily_snapshot(DAILY_SEASONAL)
         assert snapshot.measured_through == pd.Period("2026-08-19", freq="D")
 
+    def test_header_only_file_raises_clear_error(self, tmp_path: Path):
+        # Только заголовок, тело пустое: понятное сообщение по образцу
+        # остальных ошибок парсинга, а не невнятный unpack от zip(*[]).
+        path = tmp_path / "daily_header_only.csv"
+        path.write_text("Дата;Число запросов;Доля;Заголовок", encoding="utf-8-sig")
+        with pytest.raises(ValueError, match="Нет строк данных"):
+            load_daily_snapshot(path)
+
     def test_monthly_fixture_rejected_by_daily_parser(self):
         # Месячная выгрузка начинается с «Период», дневная — с «Дата»;
         # дневной парсер не должен молча принимать месячный файл.
