@@ -135,7 +135,9 @@ def detect_sktime_detector(series: pd.Series, detector_name: str) -> dict:
     y = series.reset_index(drop=True).astype(float)
     detectors = {
         "acf": lambda: SeasonalityACF(candidate_sp=CANDIDATE_SP, p_threshold=P_THRESHOLD),
-        "qstat": lambda: SeasonalityACFqstat(candidate_sp=CANDIDATE_SP, p_threshold=P_THRESHOLD),
+        "qstat": lambda: SeasonalityACFqstat(
+            candidate_sp=CANDIDATE_SP, p_threshold=P_THRESHOLD, p_adjust="fdr_by"
+        ),
         "periodogram": lambda: SeasonalityPeriodogram(),
     }
     det = detectors[detector_name]()
@@ -233,9 +235,9 @@ def main() -> int:
 
     for label, path in FIXTURES.items():
         full = load_daily_dynamics_csv(path)
-        base = full.iloc[:BASE_WINDOW_DAYS]
         if len(full) < BASE_WINDOW_DAYS:
             raise ValueError(f"Фикстура '{label}' короче {BASE_WINDOW_DAYS} дней: {len(full)}")
+        base = full.iloc[:BASE_WINDOW_DAYS]
         phrase: dict = {"base_end_date": str(base.index[-1]), "windows": {}}
         for w in WINDOWS:
             series = suffix_window(base, w)
@@ -251,7 +253,6 @@ def main() -> int:
                 "raw_sp_wide": sensitivity_wide_candidates(series),
             }
         report["phrases"][label] = phrase
-        print(json.dumps({label: phrase}, ensure_ascii=False), flush=True)
 
     print(json.dumps(report, ensure_ascii=False, indent=1))
     return 0
