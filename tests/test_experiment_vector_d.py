@@ -1,6 +1,7 @@
 """Тесты для scripts/experiment_vector_d.py (MVP #23, вариант "Г")."""
 
 import inspect
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from scripts.experiment_vector_d import (
     MONTHLY_STABILITY_THRESHOLDS,
     TRAIN_WINDOW_DAYS,
     ParamVector,
+    _fit_autoets,
     _parse_daily_period,
     check_statsforecast_model_choice,
     check_weekday_balance,
@@ -26,6 +28,7 @@ from scripts.experiment_vector_d import (
     is_comparison_unstable,
     load_daily_dynamics_csv,
     load_dynamics_csv,
+    main,
     run_stability_check,
     truncate_series,
 )
@@ -313,6 +316,7 @@ def test_is_comparison_unstable_requires_both_seasonal_before_using_seasonal_cor
     comparison = {
         "level_diff_rel": 0.01,  # уровень стабилен
         "both_seasonal": False,
+        "seasonal_spec_compatible": True,
         "seasonal_corr": float("nan"),
         "seasonal_mae_rel_to_full_range": float("nan"),
     }
@@ -330,6 +334,7 @@ def test_is_comparison_unstable_flat_profile_mae_rel_does_not_silently_pass():
     comparison = {
         "level_diff_rel": 0.01,
         "both_seasonal": True,
+        "seasonal_spec_compatible": True,
         "seasonal_corr": 0.99,  # корреляция высокая
         "seasonal_mae_rel_to_full_range": float("nan"),  # но relative MAE не определён
     }
@@ -346,6 +351,7 @@ def test_is_comparison_unstable_nan_level_diff_rel_is_not_silently_stable():
     comparison = {
         "level_diff_rel": float("nan"),
         "both_seasonal": True,
+        "seasonal_spec_compatible": True,
         "seasonal_corr": 0.99,
         "seasonal_mae_rel_to_full_range": 0.05,
     }
@@ -363,6 +369,7 @@ def test_is_comparison_unstable_nan_seasonal_corr_with_both_seasonal_true_is_not
     comparison = {
         "level_diff_rel": 0.01,
         "both_seasonal": True,
+        "seasonal_spec_compatible": True,
         "seasonal_corr": float("nan"),
         "seasonal_mae_rel_to_full_range": 0.05,
     }
@@ -374,11 +381,171 @@ def test_is_comparison_unstable_passes_genuinely_stable_comparison():
     comparison = {
         "level_diff_rel": 0.01,
         "both_seasonal": True,
+        "seasonal_spec_compatible": True,
         "seasonal_corr": 0.99,
         "seasonal_mae_rel_to_full_range": 0.05,
     }
 
     assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is False
+
+
+# --- Отложенные находки ревью PR #29 (issue #33) ---
+
+
+def test_is_comparison_unstable_spec_mismatch_is_not_silently_stable():
+    """Регрессия (issue #33, находка 4): при mul-сезонности на полном ряде и
+    add-сезонности на укороченном seasonal_mae сравнивает коэффициенты около
+    1.0 со сдвигами в единицах ряда — формально исчислимое, но бессмысленное
+    число (на фикстурах второй итерации mid_freq давало mae_rel ~400 против
+    порога 0.3). Подтверждено на реальном прогоне: несоответствие
+    параметризации обязано трактоваться как неприменимое сравнение
+    (нестабильность), даже если все остальные метрики в норме.
+    """
+    mul_seasonal = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=True,
+        seasonal=np.array([1.0, 1.1, 1.2, 1.0, 0.9, 0.8, 0.7]),
+        model_spec="mul/add/mul/damped",
+    )
+    add_seasonal = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=True,
+        seasonal=np.array([10.0, 11.0, 12.0, 10.0, 9.0, 8.0, 7.0]),  # та же форма, другая шкала
+        model_spec="add/add/add/damped",
+    )
+
+    comparison = compare_vectors(mul_seasonal, add_seasonal)
+
+    # Корреляция инвариантна к шкале и остаётся идеальной...
+    assert comparison["both_seasonal"] is True
+    assert comparison["seasonal_corr"] == 1.0
+    # ...но сравнение несопоставимо по параметризации — и обязано быть
+    # нестабильным, а не проходить пороги на артефактных MAE.
+    assert comparison["seasonal_spec_compatible"] is False
+    assert is_comparison_unstable(comparison, DAILY_STABILITY_THRESHOLDS) is True
+
+
+def test_compare_vectors_matching_seasonal_spec_is_compatible():
+    mul_a = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=True,
+        seasonal=np.ones(7),
+        model_spec="mul/add/mul/damped",
+    )
+    # Расхождение в error/trend/damped не влияет на сезонные метрики.
+    mul_b = ParamVector(
+        level=100.0,
+        trend=0.0,
+        has_trend=False,
+        has_seasonal=True,
+        seasonal=np.ones(7),
+        model_spec="add/None/mul",
+    )
+
+    comparison = compare_vectors(mul_a, mul_b)
+
+    assert comparison["seasonal_spec_compatible"] is True
+
+
+def test_run_stability_check_valueerror_is_not_measurable(monkeypatch):
+    """Регрессия (issue #33, находка 2, часть 1): ожидаемый отказ AutoETS
+    (ValueError на слишком коротком ряде) по-прежнему репортится как
+    not_measurable — экспериментальная данность, а не баг.
+    """
+    series = load_dynamics_csv(FIXTURES["high_freq (купить телефон)"])
+    full_vector = fit_autoets_vector(series)
+
+    def raise_value_error(*args, **kwargs):
+        raise ValueError("two full seasonal cycles")
+
+    monkeypatch.setattr("scripts.experiment_vector_d.fit_autoets_vector", raise_value_error)
+
+    result = run_stability_check(series, "label", full_vector, drops=(3,))
+
+    entry = result["truncated_minus_3"]
+    assert entry["outcome"] == "not_measurable"
+    assert "ValueError" in entry["error"]
+
+
+def test_run_stability_check_unexpected_exception_propagates(monkeypatch):
+    """Регрессия (issue #33, находка 2, часть 2): широкий except Exception
+    маскировал баг в compare_vectors/to_dict (KeyError, несовместимость
+    shape) под «модель не фитится» (not_measurable) — дефект кода
+    репортился как экспериментальная данность. Неожиданные исключения
+    обязаны пробрасываться наружу.
+    """
+    series = load_dynamics_csv(FIXTURES["high_freq (купить телефон)"])
+    full_vector = fit_autoets_vector(series)
+
+    def raise_key_error(*args, **kwargs):
+        raise KeyError("баг в коде сравнения, а не отказ модели")
+
+    monkeypatch.setattr("scripts.experiment_vector_d.fit_autoets_vector", raise_key_error)
+
+    with pytest.raises(KeyError):
+        run_stability_check(series, "label", full_vector, drops=(3,))
+
+
+def test_compare_seasonal_cycles_reuses_provided_forecaster(monkeypatch):
+    """Регрессия (issue #33, находка 3): compare_seasonal_cycles заново
+    фитила тот же ряд, который main() уже зафитил для full_vector, — дублируя
+    стоимость фита на каждую фикстуру. При переданном fitted_forecaster
+    рефита происходить не должно.
+    """
+    series = load_dynamics_csv(FIXTURES["seasonal (новогодние подарки)"])
+    fitted = _fit_autoets(series, sp=12)
+
+    def no_refit(*args, **kwargs):
+        raise AssertionError("дублирующий рефит: fitted_forecaster не переиспользован")
+
+    monkeypatch.setattr("scripts.experiment_vector_d._fit_autoets", no_refit)
+
+    result = compare_seasonal_cycles_within_full_series(series, sp=12, fitted_forecaster=fitted)
+
+    assert "error" not in result
+    assert len(result["cycle_2"]) == 12
+
+
+def test_main_returns_nonzero_exit_code_when_stop_condition_triggered(capsys):
+    """Регрессия (issue #33, находка 1): main() всегда возвращала 0, даже при
+    stability_stop_condition_triggered=True — единственный сигнал о срыве
+    стоп-условия был спрятан в JSON на stdout и требовал парсинга. На
+    месячных фикстурах первой итерации стоп-условие срабатывает
+    детерминированно (укороченные ряды 21/18 точек < 2 циклов →
+    not_measurable), поэтому exit code обязан быть ненулевым.
+    """
+    exit_code = main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["stability_stop_condition_triggered"] is True
+    assert exit_code == 1
+
+
+def test_load_daily_dynamics_csv_rejects_duplicate_and_missing_date(tmp_path: Path):
+    """Регрессия (issue #33, находка 5): дневной парсер сортировал даты, но
+    не проверял уникальность/непрерывность сам — защита была размазана по
+    вызывающему коду (check_weekday_balance на train-подвыборке), а holdout-
+    хвост и любые другие вызывающие оставались без проверки. Теперь парсер
+    валидирует ось сам, целиком по файлу, как месячный.
+    """
+    content = (
+        "﻿Дата;Число запросов;Доля от всех запросов, %;заголовок\r"
+        "22.06.2026;1000;0,01;\r"
+        "23.06.2026;1001;0,01;\r"
+        "23.06.2026;1002;0,01;\r"  # дубликат вместо уникальной даты
+        "25.06.2026;1003;0,01;\r"  # и пропуск 24.06
+    )
+    path = tmp_path / "broken_daily.csv"
+    path.write_bytes(content.encode("utf-8"))
+
+    with pytest.raises(ValueError, match="[Дд]убликат"):
+        load_daily_dynamics_csv(path)
 
 
 def test_statsforecast_is_a_diagnostic_backend_not_wired_into_the_stability_gate():
