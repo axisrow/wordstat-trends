@@ -211,13 +211,19 @@ class CollectService:
             time.sleep(self.cfg.collect_interval_s)
 
     def scheduler_once(self) -> None:
-        """Один плановый прогон по PHRASES_FILE; через ту же блокировку, что и HTTP."""
+        """Один плановый прогон по PHRASES_FILE; через ту же блокировку, что и HTTP.
+
+        Лок берём явно и БЕЗ `with`: _run_locked сам отпускает его в finally —
+        `with` дал бы второй release() и RuntimeError, убивающий поток
+        планировщика после первого же прогона. Блокирующе — плановый прогон
+        ждёт завершения запущенного по HTTP, а не конкурирует с ним.
+        """
         phrases = self._phrases_from_file()
         if phrases is None:
             log.info("список фраз не найден (%s), прогон по расписанию пропущен", self.cfg.phrases_file)
             return
-        with self._lock:
-            self._run_locked(phrases)
+        self._lock.acquire()
+        self._run_locked(phrases)
 
     def _phrases_from_file(self) -> list[str] | None:
         try:
@@ -299,7 +305,10 @@ class _TriggerHandler(BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
 
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or "")
+        except ValueError:
+            length = -1  # мусорный заголовок — как отсутствующий, ответ 400, а не обрыв
         if length <= 0 or length > MAX_BODY_BYTES:
             self._json(400, {"error": "invalid body size"})
             return

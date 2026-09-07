@@ -142,16 +142,56 @@ def test_second_request_while_running_gets_409(service):
 
 def test_scheduler_and_endpoint_share_lock(service):
     """Расписание и HTTP-запрос делят одну блокировку: пока идёт плановый прогон,
-    запрос по HTTP получает 409."""
+    запрос по HTTP получает 409. Поток планировщика не должен умирать после
+    прогона (двойной release лока — регрессия из ревью PR #42)."""
     svc, base, _, started, release = service
     svc.cfg.phrases_file.write_text("# комментарий\nплановая фраза\n\n")
-    scheduler = threading.Thread(target=svc.scheduler_once, daemon=True)
-    scheduler.start()
-    assert started.wait(timeout=5)
-    assert request(f"{base}/collect", body={"phrases": ["c"]})[0] == 409
+    thread_errors: list[BaseException] = []
+
+    def excepthook(args):
+        thread_errors.append(args.exc_value)
+
+    default_hook = threading.excepthook
+    threading.excepthook = excepthook
+    try:
+        scheduler = threading.Thread(target=svc.scheduler_once, daemon=True)
+        scheduler.start()
+        assert started.wait(timeout=5)
+        assert request(f"{base}/collect", body={"phrases": ["c"]})[0] == 409
+        release.set()
+        scheduler.join(timeout=10)
+    finally:
+        threading.excepthook = default_hook
+    assert not scheduler.is_alive(), "поток планировщика умер или завис"
+    assert not thread_errors, f"исключение в потоке планировщика: {thread_errors}"
+    # Лок действительно отпущен ровно один раз — следующий запуск возможен.
+    assert svc.try_start(["ещё фраза"])
     release.set()
-    scheduler.join(timeout=10)
-    assert svc.status()["phrases"] == ["плановая фраза"]
+    for _ in range(200):
+        if svc.status()["state"] == "idle":
+            break
+        threading.Event().wait(0.01)
+    assert svc.status()["phrases"] == ["ещё фраза"]
+
+
+def test_collect_garbage_content_length_is_400(service):
+    """Мусорный Content-Length — осмысленный 400, а не оборванное соединение.
+    http.client сам валидирует заголовок, поэтому сырой сокет."""
+    import socket
+    from urllib.parse import urlparse
+
+    _, base, *_ = service
+    parsed = urlparse(base)
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=10) as sock:
+        sock.sendall(
+            b"POST /collect HTTP/1.1\r\n"
+            b"Host: trigger\r\n"
+            b"Authorization: Bearer " + TOKEN.encode() + b"\r\n"
+            b"Content-Length: \xd0\xbd\xd0\xb5-\xd1\x87\xd0\xb8\xd1\x81\xd0\xbb\xd0\xbe\r\n\r\n"
+        )
+        data = sock.recv(4096).decode("utf-8", "replace")
+    assert " 400 " in data.splitlines()[0], f"ожидали 400, получили: {data.splitlines()[0]}"
+    assert "invalid body size" in data
 
 
 def test_config_from_env(monkeypatch):
