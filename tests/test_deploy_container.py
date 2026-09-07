@@ -43,6 +43,14 @@ def test_cdp_binds_loopback_only():
     assert "--remote-debugging-address=127.0.0.1" in entrypoint()
 
 
+def test_wait_depends_on_curl_and_image_has_curl():
+    """entrypoint ждёт CDP через curl — пакет обязан стоять в образе
+    (python:*-slim его не содержит; без него — crash-loop с первого деплоя)."""
+    assert "curl -fsS" in entrypoint()
+    apt_line = next(line for line in dockerfile().splitlines() if "apt-get install" in line)
+    assert "curl" in apt_line.split("install", 1)[1]
+
+
 def test_entrypoint_has_pause_between_phrases():
     assert "PHRASE_DELAY_S" in entrypoint()
     assert "sleep" in entrypoint()

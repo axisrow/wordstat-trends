@@ -72,6 +72,13 @@ collect_once() {
 
     while IFS= read -r phrase; do
         case "$phrase" in ""|\#*) continue ;; esac
+        # Живость Chrome проверяем на каждой фразе: если браузер упал посреди
+        # прогона, не ждём суток — выходим, рестарт-политика Dokku поднимет
+        # контейнер заново (см. docs/DEPLOY.md → «Рестарт-политика»).
+        kill -0 "$CHROME_PID" 2>/dev/null || {
+            echo "entrypoint: Chrome умер посреди прогона — выходим, Dokku перезапустит" >&2
+            exit 1
+        }
         echo "entrypoint: сбор фразы <${phrase}>"
         wordstat collect "$phrase" --output-dir "$RESULTS_DIR" || {
             echo "entrypoint: фраза <${phrase}> не собрана, продолжаем (см. wordstat-cli#2)" >&2

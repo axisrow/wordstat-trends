@@ -34,6 +34,10 @@ dokku storage:mount wordstat-collector /var/lib/dokku/data/storage/wordstat-coll
 
 # Никаких портов наружу: не настраиваем domains/ports для этого приложения.
 
+# Рестарт-политика: entrypoint сам завершается с ошибкой, если Chrome умер
+# посреди прогона или CDP не поднялся — контейнер должен подняться заново.
+dokku ps:set wordstat-collector restart-policy on-failure:10
+
 git remote add dokku dokku@<host>:wordstat-collector
 git push dokku main
 ```

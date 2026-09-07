@@ -10,7 +10,7 @@ FROM python:3.12-slim
 # Chromium из debian-stable: стабильная версия внутри образа важнее
 # новизны — профиль на томе должен переживать обновления пакета без сюрпризов.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium git openssh-client \
+    && apt-get install -y --no-install-recommends chromium curl git openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
