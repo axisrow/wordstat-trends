@@ -299,23 +299,101 @@ class ParamVector:
         }
 
 
-def _fit_autoets(series: pd.Series, sp: int = 12, information_criterion: str = "aic"):
-    """Зафитить AutoETS(auto=True, sp=sp) на ряде и вернуть fitted-модель
-    (statsmodels ETSResults через приватный атрибут sktime). Выделено из
-    fit_autoets_vector, чтобы диагностические функции могли переиспользовать
-    уже посчитанный фит вместо дублирующего рефита (issue #33, находка 3).
+def _seasonal_state_is_valid(fitted, seasonal: str | None) -> bool:
+    """Содержательная валидность сезонного состояния зафиченной модели.
+
+    statsmodels не гарантирует, что «сошедшийся» по критерию SLSQP фит
+    осмыслен: на коротких рядах оптимизация может остановиться в вырожденной
+    точке, где мультипликативные сезонные множители уходят ≤ 0 (в CI на
+    linux/OpenBLAS 11 из 12 множителей были ≈ -1e7 при строго положительном
+    ряде — issue #37). Для seasonal="mul" множитель ≤ 0 или не-finite — это
+    не альтернативная модель, а численный мусор: такая сезонность делает
+    прогноз отрицательным и не имеет содержательной интерпретации.
     """
-    from sktime.forecasting.ets import AutoETS
+    if seasonal is None:
+        return True
+    values = fitted.states["seasonal"].to_numpy(dtype=float)
+    if not np.all(np.isfinite(values)):
+        return False
+    if seasonal == "mul" and np.any(values <= 0):
+        return False
+    return True
+
+
+def _fit_autoets(series: pd.Series, sp: int = 12, information_criterion: str = "aic"):
+    """Зафитить AutoETS на ряде и вернуть fitted-модель (statsmodels
+    ETSResults). Выделено из fit_autoets_vector, чтобы диагностические
+    функции могли переиспользовать уже посчитанный фит вместо дублирующего
+    рефита (issue #33, находка 3).
+
+    Выбор спецификации воспроизводит sktime AutoETS(auto=True): та же сетка
+    error × trend × seasonal × damped (для строго положительного ряда —
+    2×2×3×2 минус вырожденные damped-без-тренда), тот же information
+    criterion, несошедшиеся фиты (ConvergenceWarning / mle_retvals) получают
+    NaN и выбывают из выбора. Отличие от sktime (issue #37): добавлен фильтр
+    _seasonal_state_is_valid — фиты с невалидным сезонным состоянием (mul
+    множитель ≤ 0) тоже выбывают. Без этого фильтра выбор AIC на 24 точках
+    платформо-зависим: на linux/OpenBLAS выигрывал mul/add/mul/damped с
+    вырожденным профилем (argmax=0 вместо декабрьского 11), на macOS/
+    Accelerate — корректный mul/add/mul. Вектор — ядро гипотезы #23 и не
+    должен молча меняться от реализации BLAS. С фильтром на macOS выбор не
+    меняется вовсе (damped-вариант и так проигрывал по AIC), а вырожденные
+    linux-фиты отсекаются содержательным критерием, а не тюнингом порогов.
+    """
+    import warnings
+    from itertools import product
+
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    from statsmodels.tsa.exponential_smoothing.ets import ETSModel
 
     y = series.reset_index(drop=True).astype(float)
     y.index = pd.RangeIndex(len(y))
 
-    forecaster = AutoETS(auto=True, sp=sp, n_jobs=1, information_criterion=information_criterion)
-    forecaster.fit(y)
+    ic_values: list[float] = []
+    fitted_results = []
+    for error, trend, seasonal, damped in product(
+        ("add", "mul"), (None, "add"), (None, "add", "mul"), (False, True)
+    ):
+        if trend is None and damped:
+            continue  # демпфировать нечего — как в сетке sktime
+        if error == "add" and (trend == "mul" or seasonal == "mul"):
+            continue  # restrict=True sktime: аддитивная ошибка с мультипликативными
+            # компонентами исключается из перебора (ограничение Hyndman)
+        model = ETSModel(
+            y,
+            error=error,
+            trend=trend,
+            damped_trend=damped,
+            seasonal=seasonal,
+            seasonal_periods=sp,
+        )
+        converged = True
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ConvergenceWarning)
+                fitted = model.fit(disp=False)
+            if any(issubclass(w.category, ConvergenceWarning) for w in caught):
+                converged = False
+            mle_retvals = getattr(fitted, "mle_retvals", None)
+            if isinstance(mle_retvals, dict) and not bool(mle_retvals.get("converged", True)):
+                converged = False
+        except Exception:  # noqa: BLE001 — сегмент сетки не фитится вовсе (напр., < 2*sp): NaN, как у sktime
+            ic_values.append(float("nan"))
+            fitted_results.append(None)
+            continue
+        ic_values.append(
+            float(getattr(fitted, information_criterion))
+            if converged and _seasonal_state_is_valid(fitted, seasonal)
+            else float("nan")
+        )
+        fitted_results.append(fitted)
 
-    # Приватный атрибут sktime — единственный способ достать вектор параметров
-    # ETS (level/trend/seasonal), а не только точечный прогноз.
-    return forecaster._fitted_forecaster  # type: ignore[attr-defined]  # statsmodels ETSResults
+    if not fitted_results or np.all(np.isnan(ic_values)):
+        raise ValueError(
+            f"ни одна спецификация ETS(sp={sp}) не сошлась или не прошла "
+            f"проверку сезонного состояния на ряде длиной {len(y)}"
+        )
+    return fitted_results[int(np.nanargmin(ic_values))]
 
 
 def fit_autoets_vector(
@@ -323,8 +401,9 @@ def fit_autoets_vector(
 ) -> ParamVector:
     """Снять вектор параметров AutoETS(sp=sp) с ряда.
 
-    Использует sktime AutoETS. Возвращает уровень, тренд (slope на конец
-    выборки) и полный сезонный профиль длиной sp.
+    Использует statsmodels ETSModel с перебором спецификаций, воспроизводящим
+    выбор sktime AutoETS(auto=True) (см. _fit_autoets). Возвращает уровень,
+    тренд (slope на конец выборки) и полный сезонный профиль длиной sp.
 
     calendar_anchor определяет, как выровнять сезонный профиль по
     содержательным координатам (а не по позиции в массиве), чтобы ряды с
