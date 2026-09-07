@@ -16,9 +16,14 @@ RUN apt-get update \
 WORKDIR /app
 
 # Зависимости проекта отдельным слоем: uv.lock меняется реже исходников.
-COPY pyproject.toml uv.lock ./
+COPY README.md pyproject.toml uv.lock ./
 RUN pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev
+    && uv sync --frozen --no-dev --no-install-project
+
+# Исходники проекта отдельным слоем: collect_service (issue #24) запускается
+# в рантайме как `python -m wordstat_trends.collect_service`.
+COPY src ./src
+RUN uv sync --frozen --no-dev
 
 # wordstat-cli и остальные зависимости — из uv.lock (включая git-пин `wordstat`).
 ENV PATH="/app/.venv/bin:$PATH"
@@ -39,6 +44,8 @@ RUN useradd --create-home --uid 1000 collector \
     && chown -R collector:collector /app
 USER collector
 
-EXPOSE 9222
+# CDP (9222) — декларация без публикации порта наружу (см. docs/DEPLOY.md);
+# 8899 — HTTP-эндпоинт запуска сбора (issue #24), публикуется сознательно.
+EXPOSE 9222 8899
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
