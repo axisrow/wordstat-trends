@@ -2,7 +2,6 @@
 
 import inspect
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -80,18 +79,11 @@ def test_truncate_series_drops_from_the_end():
     assert truncated.index[-1] == series.index[-4]
 
 
-# AIC AutoETS на 24 точках выбирает между mul/add/mul и mul/add/mul/damped на
-# knife-edge: на linux-BLAS (OpenBLAS) выигрывает damped-вариант с вырожденным
-# сезонным профилем (argmax=0, мусорные величины), на macOS (Accelerate) —
-# корректный профиль с декабрьским пиком. Ассерция ниже платформо-зависима;
-# до починки выбора модели — issue #37.
-@pytest.mark.xfail(
-    sys.platform.startswith("linux"),
-    reason="на linux AIC AutoETS выбирает mul/add/mul/damped с вырожденным "
-    "сезонным профилем (argmax=0 вместо 11) — платформенная "
-    "нестабильность выбора модели, issue #37",
-    strict=False,
-)
+# До issue #37 тест был в xfail(strict=False) на linux: AIC-выбор AutoETS на
+# 24 точках зависел от BLAS — на OpenBLAS выигрывал mul/add/mul/damped с
+# вырожденным сезонным профилем (11 из 12 mul-множителей ≤ 0). Починка —
+# _seasonal_state_is_valid в _fit_autoets: фиты с невалидным сезонным
+# состоянием выбывают из AIC-перебора на любой платформе.
 def test_fit_autoets_vector_on_full_series_returns_calendar_aligned_seasonal():
     series = load_dynamics_csv(FIXTURES["seasonal (новогодние подарки)"])
     vector = fit_autoets_vector(series, sp=12)
@@ -99,6 +91,35 @@ def test_fit_autoets_vector_on_full_series_returns_calendar_aligned_seasonal():
     assert len(vector.seasonal) == 12
     # Декабрьский сезонный коэффициент (индекс 11) — максимум профиля.
     assert int(np.argmax(vector.seasonal)) == 11
+
+
+def test_seasonal_state_is_valid_rejects_degenerate_mul_profile():
+    """Регрессия issue #37: на linux/OpenBLAS SLSQP-«сошедшийся» фит
+    mul/add/mul/damped имел 11 из 12 сезонных множителей ≈ -1e7 при строго
+    положительном ряде. Такой профиль обязан признаваться невалидным — иначе
+    он выигрывает AIC-перебор и вырожденный вектор молча зависит от BLAS.
+    """
+    from scripts.experiment_vector_d import _seasonal_state_is_valid
+
+    class _FakeFitted:
+        def __init__(self, seasonal_values):
+            self.states = pd.DataFrame({"seasonal": seasonal_values})
+
+    # Профиль из упавшего CI-прогона (run 33941883186): мусорные величины,
+    # одна из них ~1.0, остальные отрицательные/гигантские.
+    ci_profile = np.array(
+        [1.83211567e06, -3.43620438e06, -3.81864295e05, -1.00109400e06,
+         -2.14414754e06, -6.10979393e06, -2.17114232e04, 9.99841103e-01,
+         4.33479165e05, -3.88639645e07, -7.09792721e06, -1.02949987e07]
+    )
+    assert _seasonal_state_is_valid(_FakeFitted(ci_profile), "mul") is False
+    assert _seasonal_state_is_valid(_FakeFitted(np.array([1.1, 0.9, 1.0])), "mul") is True
+    assert _seasonal_state_is_valid(_FakeFitted(np.array([1.1, np.nan, 1.0])), "mul") is False
+    # add-сезонность может быть отрицательной — валидна, пока конечна.
+    assert _seasonal_state_is_valid(_FakeFitted(np.array([-5.0, 3.0])), "add") is True
+    assert _seasonal_state_is_valid(_FakeFitted(np.array([np.inf])), "add") is False
+    # Модель без сезонности — валидна по определению.
+    assert _seasonal_state_is_valid(None, None) is True
 
 
 def test_fit_autoets_vector_fails_on_series_shorter_than_two_seasonal_cycles():
