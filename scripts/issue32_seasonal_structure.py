@@ -125,7 +125,7 @@ def best_of(grid: list[dict], seasonal: bool, key: str) -> dict:
     return min(ok, key=lambda g: g[key])
 
 
-# ---------- A + B: реальные фикстуры ----------
+# ---------- A + B: реальные фикстуры (запуск — в main) ----------
 def run_real_grid() -> dict:
     """Сетка окон × фразы × критерии: вердикты AutoETS + декомпозиция критерия.
 
@@ -172,11 +172,6 @@ def run_real_grid() -> dict:
     return real
 
 
-print("== A/B. Реальные фикстуры: сетка окон ==")
-real = run_real_grid()
-
-
-# ---------- C: симуляция ----------
 def synth_from(real_y: np.ndarray, keep_profile: bool, n: int, gen) -> np.ndarray:
     """Синтетика с уровнем/шумом реальной фразы; профиль — реальный или константа."""
     y = real_y.astype(float)
