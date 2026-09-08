@@ -44,7 +44,7 @@ class EmptyDatasetError(LoaderError):
 
 @dataclass(frozen=True)
 class RunMetadata:
-    """Метаданные прогона из manifest.json —(attrs) поверх DataFrame."""
+    """Метаданные прогона из manifest.json — кладутся в ``df.attrs``."""
 
     phrase: str
     region: str
@@ -85,6 +85,8 @@ def parse_dynamics_rows(text: str) -> list[tuple[str, int, float]]:
     а не «молча пустой список».
     """
 
+    # BOM здесь режется повторно (utf-8-sig в load_run его уже снял) — защита
+    # для прямых вызовов с сырым текстом; литерал ниже — невидимый U+FEFF.
     reader = csv.reader(io.StringIO(text.lstrip("﻿"), newline=""), delimiter=";")
     rows = list(reader)
     if not rows:
