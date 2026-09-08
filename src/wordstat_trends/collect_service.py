@@ -196,13 +196,45 @@ class CollectService:
             log.critical("Chrome умер посреди прогона — выходим, Dokku перезапустит")
             os._exit(1)
 
+    # Deploy key не должен попадать в индекс, даже если он лежит в рабочем
+    # дереве и/или уже был добавлен раньше (issue #50). Одного .gitignore
+    # мало: `git add .` не видит ignored-файлов, но ключ мог быть добавлен до
+    # его появления. Pathspec-исключение — при каждом add, rm --cached —
+    # страховка от уже отслеживаемого.
+    _KEY_PATHSPECS = [":!.ssh_key", ":!**/.ssh_key"]
+
     def _commit_results(self) -> None:
         """Результаты — коммитом в репозиторий (машинный ключ на томе), не в HTTP."""
         git = self.cfg.git_dir
         if not (git / ".git").is_dir():
             log.info("git-репозиторий результатов не настроен (%s), коммит пропущен", git)
             return
-        subprocess.run(["git", "-C", str(git), "add", "."], check=False, capture_output=True)
+        rm = subprocess.run(
+            ["git", "-C", str(git), "rm", "-r", "--cached", "--ignore-unmatch",
+             "--", ".ssh_key", "**/.ssh_key"],
+            check=False, capture_output=True, text=True,
+        )
+        if rm.returncode != 0:
+            log.warning("git rm --cached для ключа не удался (rc=%s): %s",
+                        rm.returncode, rm.stderr.strip())
+        add = subprocess.run(
+            ["git", "-C", str(git), "add", ".", "--", *self._KEY_PATHSPECS],
+            check=False, capture_output=True, text=True,
+        )
+        if add.returncode != 0:
+            log.warning("git add результатов не удался (rc=%s): %s",
+                        add.returncode, add.stderr.strip())
+        # Страховка поверх кода возврата rm: если ключ каким-то образом остался
+        # в индексе (битый индекс и т.п.), коммитить нельзя — коммит уехал бы
+        # в origin вместе с ключом.
+        still_tracked = subprocess.run(
+            ["git", "-C", str(git), "ls-files", "--", ".ssh_key", "**/.ssh_key"],
+            check=False, capture_output=True, text=True,
+        )
+        if still_tracked.stdout.strip():
+            log.error("deploy key остался в индексе после исключения — "
+                      "коммит и пуш результатов пропущены")
+            return
         commit = subprocess.run(
             [
                 "git", "-C", str(git),

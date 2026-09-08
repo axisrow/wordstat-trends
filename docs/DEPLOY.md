@@ -59,13 +59,24 @@ ssh dokku@<host> "sudo install -o 1000 -g 1000 -m 644 /tmp/phrases.txt \
 ssh dokku@<host>
 sudo -u 1000 git clone git@github.com:axisrow/wordstat-data.git \
     /var/lib/dokku/data/storage/wordstat-collector-data/repo
+# Ключ — ВНЕ рабочего дерева репозитория (issue #50): сервис делает `git add .`
+# в repo/, ключ внутри repo/ попал бы в коммит и уехал в origin.
 sudo install -o 1000 -g 1000 -m 600 machine_key_ed25519 \
-    /var/lib/dokku/data/storage/wordstat-collector-data/repo/.ssh_key
+    /var/lib/dokku/data/storage/wordstat-collector-data/.ssh_key
 # и указать ключ в repo/.git/config через core.sshCommand:
-#   ssh -i /app/data/repo/.ssh_key -o StrictHostKeyChecking=accept-new
+#   ssh -i /app/data/.ssh_key -o StrictHostKeyChecking=accept-new
 ```
 
-Ключ живёт на томе, а не в образе и не в `dokku config`.
+Ключ живёт на томе (рядом с `repo/`, но не внутри), а не в образе и не в
+`dokku config`. Дополнительно к размещению вне дерева `collect_service`
+исключает путь `.ssh_key` перед `git add` (и вычищает его из индекса, если он
+был добавлен ранее) — защита не полагается только на расположение файла.
+
+**Если ключ уже уехал в origin**: вычистка индекса (`git rm --cached`) убирает
+ключ только из будущих коммитов — история остаётся, а репозиторий
+`wordstat-data` доступен в рамках GitHub. Правильная процедура после такого
+инцидента — **ротация ключа**, а не только вычистка: см.
+[#58](https://github.com/axisrow/wordstat-trends/issues/58).
 
 ### Cookies
 
@@ -149,9 +160,10 @@ dokku run wordstat-collector ls /app/data/results   # что накопилос�
 
 - **Chrome не поднялся / CDP не готов за 60с** — entrypoint завершает контейнер;
   смотрите `dokku logs`, затем запускайте `chromium` руками через `dokku run`.
-- **Прогон упал на середине фразы** — ожидаемо: wordstat-cli#2 (устойчивость
-  прогона) открыт. Расписание продолжает работать, полноту одного прогона до
-  закрытия #2 не гарантируем.
+- **Прогон упал на середине фразы** — wordstat-cli#2 (устойчивость прогона:
+  инкрементальный манифест и дозапись) закрыт, повторный запуск продолжает
+  сбор с места остановки, а не начинает с нуля. Расписание продолжает
+  работать.
 - **Wordstat показывает страницу входа** — `wordstat collect` сам прекращает
   работу; это сигнал, что сессия протухла — обновите cookies (раздел выше).
 
