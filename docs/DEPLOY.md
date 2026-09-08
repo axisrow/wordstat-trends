@@ -186,6 +186,10 @@ dokku run wordstat-collector ls /app/data/results   # что накопилос�
 | `PHRASES_FILE` | `/app/data/phrases.txt` | список фраз |
 | `RESULTS_DIR` | `/app/data/results` | выгрузки `wordstat collect` |
 | `GIT_DIR` | `/app/data/repo` | git-репозиторий для коммита результатов |
+
+RESULTS_DIR и GIT_DIR — разные каталоги: перед коммитом сервис копирует
+накопленные выгрузки из RESULTS_DIR в `GIT_DIR/results` и только затем делает
+`git add`/commit/push (issue #57). Дополнительной ручной раскладки не нужно.
 | `TRIGGER_TOKEN` | — | токен HTTP-эндпоинта (issue #24); не задан — эндпоинт отключён |
 | `TRIGGER_PORT` | `8899` | порт HTTP-эндпоинта внутри контейнера |
 | `TRIGGER_MAX_PHRASES` | `50` | лимит списка фраз в одном запросе |

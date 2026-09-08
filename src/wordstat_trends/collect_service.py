@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -182,12 +183,27 @@ class CollectService:
     # страховка от уже отслеживаемого.
     _KEY_PATHSPECS = [":!.ssh_key", ":!**/.ssh_key"]
 
+    def _stage_results(self, git: Path) -> None:
+        """Доставить выгрузки из RESULTS_DIR в GIT_DIR/results перед коммитом (issue #57).
+
+        Сбор пишет в RESULTS_DIR, а коммитит и пушит — репозиторий GIT_DIR;
+        это разные каталоги, без копирования коммит уходил бы с пустым деревом.
+        """
+        src = self.cfg.results_dir
+        if not src.is_dir():
+            return
+        try:
+            shutil.copytree(src, git / "results", dirs_exist_ok=True)
+        except OSError as exc:
+            log.warning("копирование результатов в git-репозиторий не удалось: %s", exc)
+
     def _commit_results(self) -> None:
         """Результаты — коммитом в репозиторий (машинный ключ на томе), не в HTTP."""
         git = self.cfg.git_dir
         if not (git / ".git").is_dir():
             log.info("git-репозиторий результатов не настроен (%s), коммит пропущен", git)
             return
+        self._stage_results(git)
         rm = subprocess.run(
             ["git", "-C", str(git), "rm", "-r", "--cached", "--ignore-unmatch",
              "--", ".ssh_key", "**/.ssh_key"],
