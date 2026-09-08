@@ -56,12 +56,26 @@ REVERT_HORIZON = 2
 REVERT_TOLERANCE = 0.5
 # Допуск (в периодах) при сопоставлении известных дат с найденными разрывами.
 KNOWN_DATE_TOLERANCE = 1
-# Порог переходного шока: робастная z-оценка (отклонение от медианы остатка,
-# нормировка 1.4826*MAD) выше 3 — за пределами шума при месячной гранулярности.
-# Предрегистрировано; переходный шок длиной 1–2 месяца Pelt с min_size>=3
-# не видит по построению, поэтому шоки ищутся отдельным детектором до
-# разрывов уровня.
-SPIKE_Z_THRESHOLD = 3.0
+# Порог переходного шока: робастная z-оценка ЛОКАЛЬНОГО отклонения остатка от
+# его центрированной скользящей медианы (нормировка 1.4826*MAD) выше порога.
+# Локальная база обязательна: против медианы всего ряда устойчивый сдвиг
+# уровня помечает «выбросом» весь пост-сдвиговый сегмент (воспроизведено:
+# серия длиной 24 месяца на ряде с одним сдвигом ×5), а ступеньки скользящего
+# уровня дают ложные шоки на чистом ряду. Шок ищется в обе стороны —
+# отрицательный провал спроса равноправен положительному. Переходный шок
+# длиной 1–2 месяца Pelt с min_size>=3 не видит по построению, поэтому шоки
+# ищутся отдельным детектором до разрывов уровня.
+SPIKE_Z_THRESHOLD = 3.5
+# Абсолютный пол амплитуды шока (в лог-единицах): |отклонение| >= 0.3, т.е.
+# +/-35 % от локального уровня. Двухусловное правило (z И амплитуда) отсекает
+# маргинальные срабатывания чистого шума: при эмпирически тесном MAD z-score
+# тяжеловатого шума достигает 3.5-4 на амплитудах ~8 %, тогда как содержательный
+# месячный шок спроса — десятки процентов (COVID-инъекция ×4 даёт ~1.4).
+SPIKE_MIN_ABS_LOG = 0.3
+# Нечётное окно локальной медианы для шок-детектора: медиана робастна к 1–2
+# месяцам шока и отслеживает сдвиги уровня, поэтому отклонение от неё видит
+# шок, но не сдвиг.
+SPIKE_LOCAL_WINDOW = 13
 # Окно скользящей медианы для оценки сезонного профиля: 12 месяцев покрывают
 # все месяцы года по одному разу, медиана не тянется за сдвигом уровня.
 PROFILE_WINDOW = 12
@@ -100,8 +114,12 @@ class BreakPoint:
     """Одна точка разрыва и её классификация.
 
     ``at`` — последний период ДО разрыва (разрыв лежит между ``at`` и
-    следующим периодом). ``delta_log`` — сдвиг среднего уровня
-    десезонализированного лог-ряда (натуральный лог, т.е. 1.0 = ×e ≈ +172 %).
+    следующим периодом); если разрыв начинается с первого периода ряда,
+    до-разрывного периода нет и ``at`` — первый период нового режима
+    (помечено ``evidence["at_series_start"]``). ``delta_log`` — натуральный
+    лог: для разрыва уровня это сдвиг среднего между сегментами (1.0 = ×e ≈
+    +172 %); для шока (``evidence["spike"]``) — амплитуда пика относительно
+    робастного (медианного) уровня ряда, величина того же смысла и шкалы.
     """
 
     at: pd.Period
@@ -169,27 +187,35 @@ def deseasonalize_log(series: pd.Series) -> pd.Series:
     grouped = pd.Series(norm.to_numpy(), index=keys)
     profile = grouped.groupby(level=0).median()
     profile[grouped.groupby(level=0).count() < 2] = 0.0
-    resid = log.to_numpy() - np.array([profile[k] for k in keys], dtype=float)
+    # .get, а не [k]: после усечения ряда (truncate_series) месяц/день недели
+    # может полностью отсутствовать в индексе — профиль для него 0.
+    resid = log.to_numpy() - np.array([profile.get(k, 0.0) for k in keys], dtype=float)
     return pd.Series(resid, index=series.index, name="resid_log")
 
 
-def detect_spike_months(series: pd.Series, *, z_threshold: float = SPIKE_Z_THRESHOLD) -> list[tuple[int, int]]:
-    """Непрерывные серии месяцев-выбросов на десезонализированном остатке.
+def _local_deviation(values: np.ndarray) -> np.ndarray:
+    """Отклонение от центрированной скользящей медианы (окно
+    SPIKE_LOCAL_WINDOW): локальный уровень, робастный к 1–2 месяцам шока и
+    отслеживающий сдвиги уровня. Краям, где полного окна нет, уровень
+    переносится от ближайшего полного окна."""
+    s = pd.Series(values)
+    local = s.rolling(SPIKE_LOCAL_WINDOW, center=True, min_periods=SPIKE_LOCAL_WINDOW).median()
+    return (s - local.bfill().ffill()).to_numpy(dtype=float)
 
-    Возвращает пары (индекс первого месяца серии, длина серии). Робастная
-    z-оценка: (остаток − медиана остатка) / (1.4826 · MAD). Переходный шок
-    длится 1–2 месяца — короче MIN_SEGMENT_SIZE, поэтому Pelt не может
-    выделить его в сегмент; шоки ищутся здесь, до детекции уровней. Серия
-    подряд идущих выбросов — один шок, а не несколько.
+
+def _spike_runs(deviation: np.ndarray, *, z_threshold: float, min_abs: float) -> list[tuple[int, int]]:
+    """Непрерывные серии месяцев-выбросов на локальном отклонении: пары
+    (индекс первого месяца серии, длина серии). Шок ищется в обе стороны:
+    |z| > порога И |отклонение| >= абсолютного пола (двухусловное правило,
+    см. SPIKE_MIN_ABS_LOG) — отрицательный шок спроса равноправен
+    положительному.
     """
-    resid = deseasonalize_log(series)
-    values = resid.to_numpy(dtype=float)
-    med = float(np.median(values))
-    mad = float(np.median(np.abs(values - med)))
+    med = float(np.median(deviation))
+    mad = float(np.median(np.abs(deviation - med)))
     if mad == 0.0:
         return []
-    z = (values - med) / (1.4826 * mad)
-    flagged = np.flatnonzero(z > z_threshold)
+    z = (deviation - med) / (1.4826 * mad)
+    flagged = np.flatnonzero((np.abs(z) > z_threshold) & (np.abs(deviation - med) >= min_abs))
     runs: list[tuple[int, int]] = []
     for i in flagged:
         if runs and int(i) == runs[-1][0] + runs[-1][1]:
@@ -197,6 +223,53 @@ def detect_spike_months(series: pd.Series, *, z_threshold: float = SPIKE_Z_THRES
         else:
             runs.append((int(i), 1))
     return runs
+
+
+def detect_spike_months(
+    series: pd.Series,
+    *,
+    z_threshold: float = SPIKE_Z_THRESHOLD,
+    min_abs: float = SPIKE_MIN_ABS_LOG,
+) -> list[tuple[int, int]]:
+    """Непрерывные серии месяцев-выбросов на десезонализированном остатке.
+
+    Возвращает пары (индекс первого месяца серии, длина серии). Робастная
+    z-оценка локального отклонения (остаток минус его скользящая медиана):
+    |z| > порога И амплитуда >= min_abs — шок ищется в обе стороны,
+    отрицательный провал спроса равноправен положительному. Переходный шок
+    длится 1–2 месяца — короче MIN_SEGMENT_SIZE, поэтому Pelt не может
+    выделить его в сегмент; шоки ищутся здесь, до детекции уровней. Серия
+    подряд идущих выбросов — один шок, а не несколько.
+    """
+    return _spike_runs(
+        _local_deviation(deseasonalize_log(series).to_numpy(dtype=float)),
+        z_threshold=z_threshold,
+        min_abs=min_abs,
+    )
+
+
+def _detect_break_points_values(
+    values: np.ndarray,
+    *,
+    penalty: float,
+    min_size: int,
+    algorithm: Literal["pelt", "binseg"],
+) -> list[tuple[int, float]]:
+    """Детекция разрывов уровня на готовом сигнале (уже без выбросов)."""
+    if len(values) < 2 * min_size:
+        return []
+    algo_cls = Pelt if algorithm == "pelt" else Binseg
+    algo = algo_cls(model="l2", min_size=min_size, jump=1)
+    ends = algo.fit(values).predict(pen=penalty)
+    # ends — концы сегментов, включая len(values); внутренние границы — разрывы.
+    boundaries = [e for e in ends[:-1] if 0 < e < len(values)]
+    result: list[tuple[int, float]] = []
+    start = 0
+    for b in boundaries:
+        delta = float(values[b:].mean()) - float(values[start:b].mean())
+        result.append((int(b), delta))
+        start = b
+    return result
 
 
 def detect_break_points(
@@ -217,24 +290,22 @@ def detect_break_points(
     """
     resid = deseasonalize_log(series)
     values = resid.to_numpy(dtype=float).copy()
-    for start, length in detect_spike_months(series):
-        left = values[start - 1] if start - 1 >= 0 else values[start + length]
-        right = values[start + length] if start + length < len(values) else left
-        values[start : start + length] = (left + right) / 2
-    if len(values) < 2 * min_size:
-        return []
-    algo_cls = Pelt if algorithm == "pelt" else Binseg
-    algo = algo_cls(model="l2", min_size=min_size, jump=1)
-    ends = algo.fit(values).predict(pen=penalty)
-    # ends — концы сегментов, включая len(values); внутренние границы — разрывы.
-    boundaries = [e for e in ends[:-1] if 0 < e < len(values)]
-    result: list[tuple[int, float]] = []
-    start = 0
-    for b in boundaries:
-        delta = float(values[b:].mean()) - float(values[start:b].mean())
-        result.append((int(b), delta))
-        start = b
-    return result
+    deviation = _local_deviation(values)
+    for start, length in _spike_runs(deviation, z_threshold=SPIKE_Z_THRESHOLD, min_abs=SPIKE_MIN_ABS_LOG):
+        _replace_spike(values, start, length)
+    return _detect_break_points_values(values, penalty=penalty, min_size=min_size, algorithm=algorithm)
+
+
+def _replace_spike(values: np.ndarray, start: int, length: int) -> None:
+    """Заменить месяцы шока средним ближайших не-шоковых соседей. Если шок
+    прилегает к краю ряда, доступен только один сосед; шок на ВСЁМ ряде не
+    заменяется (заменять нечем) — детекция уровней на таком ряде не имеет
+    смысла и вернёт пустой список по длине."""
+    left = values[start - 1] if start - 1 >= 0 else None
+    right = values[start + length] if start + length < len(values) else None
+    if left is None and right is None:
+        return
+    values[start : start + length] = (left if right is None else right if left is None else (left + right) / 2)
 
 
 def classify_breaks(
@@ -264,22 +335,30 @@ def classify_breaks(
     """
     resid = deseasonalize_log(series)
     values = resid.to_numpy(dtype=float)
-    spike_runs = detect_spike_months(series)
+    deviation = _local_deviation(values)
+    spike_runs = _spike_runs(deviation, z_threshold=SPIKE_Z_THRESHOLD, min_abs=SPIKE_MIN_ABS_LOG)
     spike_idx = {i for start, length in spike_runs for i in range(start, start + length)}
     breaks: list[BreakPoint] = []
 
     # Переходные шоки (1–2 месяца): отдельный детектор, Pelt их не видит.
     for start, length in spike_runs:
-        at = series.index[start - 1]
+        at_series_start = start == 0
+        # at — последний период ДО разрыва; у шока с началом ряда до-разрывного
+        # периода нет, тогда at — первый период нового режима (помечено в
+        # evidence), иначе негативный индекс молча дал бы конец ряда.
+        at = series.index[0] if at_series_start else series.index[start - 1]
+        peak = int(start + np.argmax(np.abs(deviation[start : start + length])))
         breaks.append(
             BreakPoint(
                 at=at,
-                delta_log=float(values[start : start + length].max()),
+                delta_log=float(deviation[peak]),
                 kind="demand_transient",
                 evidence={
                     "spike": True,
+                    "at_series_start": at_series_start,
                     "spike_months": length,
                     "spike_z_threshold": SPIKE_Z_THRESHOLD,
+                    "spike_min_abs_log": SPIKE_MIN_ABS_LOG,
                     "reverted": True,
                     "revert_horizon": REVERT_HORIZON,
                     "seam": False,
@@ -289,8 +368,12 @@ def classify_breaks(
             )
         )
 
-    # Разрывы уровня: Pelt/Binseg на сигнале со заменёнными выбросами.
-    for idx, delta in detect_break_points(series, penalty=penalty, min_size=min_size, algorithm=algorithm):
+    # Разрывы уровня: Pelt/Binseg на сигнале со заменёнными выбросами
+    # (десезонализация считается один раз, сюда сигнал уже готов).
+    cleaned = values.copy()
+    for start, length in spike_runs:
+        _replace_spike(cleaned, start, length)
+    for idx, delta in _detect_break_points_values(cleaned, penalty=penalty, min_size=min_size, algorithm=algorithm):
         at = series.index[idx - 1]
         kind: BreakKind
         reverted = False

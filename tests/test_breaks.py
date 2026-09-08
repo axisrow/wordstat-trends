@@ -173,6 +173,45 @@ def test_real_monthly_fixture_structural_invariants() -> None:
     assert report["series_range"] == [str(series.index.min()), str(series.index.max())]
 
 
+def test_spike_at_series_start_uses_first_period() -> None:
+    """Шок с первого месяца ряда: at = первый период (с пометкой), а не
+    последний период ряда через негативный индекс."""
+    index = pd.period_range("2019-01", periods=60, freq="M")
+    series = synthetic_monthly(shock={0: 4.0, 1: 3.0})
+    spikes = [b for b in classify_breaks(series) if b.evidence["spike"]]
+    assert len(spikes) == 1
+    assert spikes[0].at == index[0]
+    assert spikes[0].evidence["at_series_start"] is True
+    assert spikes[0].delta_log > 0
+
+
+def test_whole_series_spike_does_not_crash() -> None:
+    """Ряд, целиком состоящий из «шока» (уровень всюду ×50): относительно
+    самого себя шока нет, replaced-нечем-кейс не падает, разрывов 0."""
+    index = pd.period_range("2019-01", periods=36, freq="M")
+    values = [10000.0 * 50.0 * SEASONAL_FACTORS[p.month] for p in index]
+    series = pd.Series(values, index=index, name="count")
+    assert classify_breaks(series) == []
+
+
+def test_negative_shock_is_detected() -> None:
+    """Отрицательный переходный шок (провал спроса) равноправен положительному."""
+    series = synthetic_monthly(shock={15: 0.2, 16: 0.25})
+    spikes = [b for b in classify_breaks(series) if b.evidence["spike"]]
+    assert len(spikes) == 1
+    assert spikes[0].kind == "demand_transient"
+    assert spikes[0].delta_log < 0
+
+
+def test_deseasonalize_tolerates_missing_month() -> None:
+    """После усечения ряда в индексе может не быть отдельных месяцев —
+    отсутствие наблюдений периода означает нулевой профиль, не KeyError."""
+    series = synthetic_monthly()
+    truncated = series.drop(index=[pd.Period("2021-05", freq="M"), pd.Period("2023-05", freq="M")])
+    resid = deseasonalize_log(truncated)
+    assert len(resid) == len(truncated)
+
+
 def test_breakpoint_is_frozen_dataclass() -> None:
     br = BreakPoint(at=pd.Period("2024-08", freq="M"), delta_log=0.0, kind="unresolved", evidence={})
     with pytest.raises(Exception):
