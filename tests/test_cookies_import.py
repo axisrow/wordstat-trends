@@ -162,7 +162,7 @@ class FakePage:
                 "hasLogout": self.authorized,
             }
             return json.dumps(state)
-        return "True"  # QUERY_SELECTOR найден
+        return True  # QUERY_SELECTOR найден — как живой CDP, bool
 
 
 class FakeSession:

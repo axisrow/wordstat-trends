@@ -40,19 +40,19 @@ log = logging.getLogger("wordstat_trends.cookies_import")
 
 # Хвостовой allowlist доменов Яндекса, точное совпадение или поддомен
 # (`host == suffix or host.endswith("." + suffix)`). Копия YANDEX_COOKIE_DOMAIN_
-# SUFFIXES из wordstat-cli: в пине контейнера (45512d4) auth.py ещё нет, а
-# тянуть константу из чужого пакета ради четырёх строк не стоит — при смене
-# списка в wordstat-cli обновить и здесь (обе стороны про одну и ту же сессию).
+# SUFFIXES из wordstat-cli: в его пине (uv.lock) auth.py ещё нет, а тянуть
+# константу из чужого пакета ради четырёх строк не стоит — при смене списка
+# в wordstat-cli обновить и здесь (обе стороны про одну и ту же сессию).
 YANDEX_COOKIE_DOMAIN_SUFFIXES = ("yandex.ru", "ya.ru", "yandex.com", "yandex.net")
 
 # Реальные экспорты сессии Яндекса — единицы килобайт; лимит отсекает
 # случайно подложенный гигантский файл до того, как он уедет в память.
 MAX_COOKIES_FILE_BYTES = 1024 * 1024
 
-# Те же константы UI, что в wordstat-cli collector.py (пин 45512d4): URL,
-# селектор строки поиска и probe авторизации. Probe обязан совпадать с тем,
-# что проверяет живой сбор, — иначе импорт «подтвердит» сессию, которую
-# collect тут же отвергнет.
+# Те же константы UI, что в wordstat-cli collector.py: URL, селектор строки
+# поиска и probe авторизации. Probe обязан совпадать с тем, что проверяет
+# живой сбор, — иначе импорт «подтвердит» сессию, которую collect тут же
+# отвергнет.
 WORDSTAT_URL = "https://wordstat.yandex.ru/"
 QUERY_SELECTOR = 'input[placeholder="Введите слово или словосочетание"]'
 AUTH_PROBE = """() => JSON.stringify({
@@ -112,12 +112,9 @@ def parse_netscape_cookies(text: str) -> tuple[list[dict], ImportReport]:
             raw_line.startswith("#") and not raw_line.startswith("#HttpOnly_")
         ):
             continue
-        line = raw_line
 
-        http_only = False
-        if line.startswith("#HttpOnly_"):
-            http_only = True
-            line = line.removeprefix("#HttpOnly_")
+        http_only = raw_line.startswith("#HttpOnly_")
+        line = raw_line.removeprefix("#HttpOnly_") if http_only else raw_line
 
         fields = line.split("\t")
         if len(fields) != 7:
@@ -212,7 +209,10 @@ async def _wait_for_search_input(page) -> None:
     deadline = time.monotonic() + RENDER_TIMEOUT_S
     while time.monotonic() < deadline:
         found = await page.evaluate(f"() => Boolean(document.querySelector({selector}))")
-        if str(found).lower() in ("true", "1"):
+        # Живой CDP возвращает bool, странные бекенды — строку; всё прочее
+        # (None при ошибке evaluate и т.п.) не считается «нашлось» и циклится
+        # до таймаута, а не молча принимается.
+        if found is True or found == "true":
             return
         await asyncio.sleep(0.25)
     raise CookiesImportError(f"Wordstat не отрисовал строку поиска за {RENDER_TIMEOUT_S:g}с")
