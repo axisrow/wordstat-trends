@@ -204,6 +204,23 @@ def test_collect_garbage_content_length_is_400(service):
     assert "invalid body size" in rest
 
 
+def test_commit_results_delivers_files_to_git(tmp_path):
+    """Контракт issue #57: RESULTS_DIR и GIT_DIR — разные каталоги, копирование
+    делает сам сервис. После _commit_results() выгрузки лежат в git-репозитории
+    (в индексе), без ручной раскладки. Пуш без origin не фатален — не проверяем."""
+    results = tmp_path / "results"
+    git = tmp_path / "repo"
+    (results / "2026-09-08").mkdir(parents=True)
+    (results / "2026-09-08" / "phrase.json").write_text("{}", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(git)], check=True)
+    svc = CollectService(Config(results_dir=results, git_dir=git))
+    svc._commit_results()
+    ls = subprocess.run(
+        ["git", "-C", str(git), "ls-files"], check=True, capture_output=True, text=True
+    )
+    assert "results/2026-09-08/phrase.json" in ls.stdout.splitlines()
+
+
 def test_config_from_env(monkeypatch):
     monkeypatch.setenv("TRIGGER_TOKEN", "t")
     monkeypatch.setenv("TRIGGER_PORT", "9001")
