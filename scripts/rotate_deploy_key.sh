@@ -36,7 +36,10 @@ DATA_REPO="axisrow/wordstat-data"
 VOLUME_DIR="/var/lib/dokku/data/storage/${APP}-data"
 SSH_COMMAND="ssh -i /app/data/.ssh_key -o StrictHostKeyChecking=accept-new"
 # uid контейнера (пользователь collector) для sudo: '#<uid>', не имя.
-SUDO_COLLECTOR="sudo -u #1000"
+# Одинарные кавычки в значении обязательны: переменная подставляется в
+# удалённую команду, где # без кавычек начал бы комментарий и оставил бы
+# `sudo -u` без аргумента.
+SUDO_COLLECTOR="sudo -u '#1000'"
 
 case "$APP" in
     *[!A-Za-z0-9_-]* | '') echo "ошибка: недопустимое имя app: ${APP}" >&2; exit 64 ;;
@@ -53,8 +56,13 @@ command -v ssh-keygen >/dev/null 2>&1 || {
 
 # --- 1. История: попадал ли ключ в коммиты ------------------------------
 echo ">> [1/6] проверка истории ${VOLUME_DIR}/repo на хосте ${HOST}"
-FOUND=$(ssh "$HOST" "${SUDO_COLLECTOR} git -C '${VOLUME_DIR}/repo' \
-    log --all --full-history --oneline -- .ssh_key '**/.ssh_key'" || true)
+# Отказ команды (нет репозитория, sudo, ssh) не маскируется: пустой вывод —
+# это «ключа в истории нет», а ошибка должна валить скрипт.
+if ! FOUND=$(ssh "$HOST" "${SUDO_COLLECTOR} git -C '${VOLUME_DIR}/repo' \
+    log --all --full-history --oneline -- .ssh_key '**/.ssh_key'"); then
+    echo "ошибка: проверка истории на хосте не выполнена (репозиторий/ssh/sudo?)" >&2
+    exit 1
+fi
 if [ -n "$FOUND" ]; then
     echo "!! ВНИМАНИЕ: .ssh_key найден в истории data-репозитория:"
     echo "$FOUND"
