@@ -72,7 +72,11 @@ trap cleanup EXIT INT TERM
 #
 # TRIGGER_TOKEN задаётся через dokku config (не в образ и не в репозиторий);
 # без него HTTP-эндпоинт не поднимается, расписание работает.
-CHROME_PID="$CHROME_PID" python -m wordstat_trends.collect_service &
+# COOKIES_FILE — путь (не содержимое!) к файлу на томе: сервис до старта
+# планировщика импортирует куки в Chrome-профиль и проверяет авторизацию
+# (issue #51); неудача завершает сервис, контейнер уходит в рестарт.
+CHROME_PID="$CHROME_PID" CDP_PORT="$CDP_PORT" COOKIES_FILE="$COOKIES_FILE" \
+    python -m wordstat_trends.collect_service &
 SERVICE_PID=$!
 
 cleanup() {
