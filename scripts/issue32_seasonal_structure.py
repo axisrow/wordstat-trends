@@ -105,6 +105,8 @@ def statsmodels_grid(y: np.ndarray) -> list[dict]:
                                 "seasonal": seasonal is not None,
                                 "loglik": res.llf,
                                 "k": res.df_model,
+                                "n_params": len(res.params),
+                                "n": len(y),
                                 "aic": res.aic,
                                 "aicc": res.aicc,
                                 "bic": res.bic,
@@ -123,50 +125,54 @@ def best_of(grid: list[dict], seasonal: bool, key: str) -> dict:
     return min(ok, key=lambda g: g[key])
 
 
-# ---------- A + B: реальные фикстуры ----------
-print("== A/B. Реальные фикстуры: сетка окон ==")
-real: dict = {}
-for name, path in FIXTURES.items():
-    full = load_daily_dynamics_csv(path).iloc[:TRAIN_WINDOW]
-    real[name] = {}
-    for w in WINDOWS:
-        series = truncate_series(full, TRAIN_WINDOW - w)
-        y = series.astype(float).to_numpy()
-        entry: dict = {"window": w, "n": len(y)}
-        for ic in ["aicc", "aic"]:
-            has_seas, spec = sktime_has_seasonal(series.astype(float), ic)
-            entry[ic] = {"has_seasonal": has_seas, "spec": spec}
-        grid = statsmodels_grid(y)
-        best_s = best_of(grid, True, "aicc")
-        best_n = best_of(grid, False, "aicc")
-        best_s_aic = best_of(grid, True, "aic")
-        best_n_aic = best_of(grid, False, "aic")
-        entry["decomp"] = {
-            "best_seasonal": best_s,
-            "best_nonseasonal": best_n,
-            "d_aicc_seasonal_minus_non": best_s["aicc"] - best_n["aicc"],
-            "d_aic_seasonal_minus_non": best_s_aic["aic"] - best_n_aic["aic"],
-            "d_loglik_non_minus_seasonal": best_n["loglik"] - best_s["loglik"],
-            "d_k": best_s["k"] - best_n["k"],
-            "penalty_s_aicc_minus_aic": best_s["aicc"] - best_s["aic"],
-            "penalty_n_aicc_minus_aic": best_n["aicc"] - best_n["aic"],
-        }
-        real[name][w] = entry
-        d = entry["decomp"]
-        print(
-            name,
-            w,
-            entry["aicc"],
-            entry["aic"],
-            "dAICc(S-N)={:.1f}".format(d["d_aicc_seasonal_minus_non"]),
-            "dLL={:.2f}".format(d["d_loglik_non_minus_seasonal"]),
-            "dk={:d}".format(d["d_k"]),
-        )
+# ---------- A + B: реальные фикстуры (запуск — в main) ----------
+def run_real_grid() -> dict:
+    """Сетка окон × фразы × критерии: вердикты AutoETS + декомпозиция критерия.
 
-
-# ---------- C: симуляция ----------
-print("== C. Симуляция ==")
-rng = np.random.default_rng(SEED)
+    Отдельная функция (а не module-level код), чтобы guardrail-тест согласованности
+    (issue #44) проверял именно этот код, а не собственную копию.
+    """
+    real: dict = {}
+    for name, path in FIXTURES.items():
+        full = load_daily_dynamics_csv(path).iloc[:TRAIN_WINDOW]
+        real[name] = {}
+        for w in WINDOWS:
+            series = truncate_series(full, TRAIN_WINDOW - w)
+            y = series.astype(float).to_numpy()
+            entry: dict = {"window": w, "n": len(y)}
+            for ic in ["aicc", "aic"]:
+                has_seas, spec = sktime_has_seasonal(series.astype(float), ic)
+                entry[ic] = {"has_seasonal": has_seas, "spec": spec}
+            grid = statsmodels_grid(y)
+            # Полная сетка сохраняется в ячейке — guardrail-тест (#44) и JSON
+            # переиспользуют её без рефитов.
+            entry["grid"] = grid
+            best_s = best_of(grid, True, "aicc")
+            best_n = best_of(grid, False, "aicc")
+            best_s_aic = best_of(grid, True, "aic")
+            best_n_aic = best_of(grid, False, "aic")
+            entry["decomp"] = {
+                "best_seasonal": best_s,
+                "best_nonseasonal": best_n,
+                "d_aicc_seasonal_minus_non": best_s["aicc"] - best_n["aicc"],
+                "d_aic_seasonal_minus_non": best_s_aic["aic"] - best_n_aic["aic"],
+                "d_loglik_non_minus_seasonal": best_n["loglik"] - best_s["loglik"],
+                "d_k": best_s["k"] - best_n["k"],
+                "penalty_s_aicc_minus_aic": best_s["aicc"] - best_s["aic"],
+                "penalty_n_aicc_minus_aic": best_n["aicc"] - best_n["aic"],
+            }
+            real[name][w] = entry
+            d = entry["decomp"]
+            print(
+                name,
+                w,
+                entry["aicc"],
+                entry["aic"],
+                "dAICc(S-N)={:.1f}".format(d["d_aicc_seasonal_minus_non"]),
+                "dLL={:.2f}".format(d["d_loglik_non_minus_seasonal"]),
+                "dk={:d}".format(d["d_k"]),
+            )
+    return real
 
 
 def synth_from(real_y: np.ndarray, keep_profile: bool, n: int, gen) -> np.ndarray:
@@ -186,43 +192,54 @@ def synth_null(real_y: np.ndarray, n: int, gen) -> np.ndarray:
     return gen.normal(y.mean(), y.std(), n)
 
 
-sim: dict = {}
-for name, path in FIXTURES.items():
-    y56 = load_daily_dynamics_csv(path).iloc[:TRAIN_WINDOW].astype(float).to_numpy()
-    sim[name] = {}
-    conditions = {
-        "seasonal": lambda n, g: synth_from(y56, True, n, g),
-        "no_seasonal_profile": lambda n, g: synth_from(y56, False, n, g),
-        "null_noise": lambda n, g: synth_null(y56, n, g),
-    }
-    for cond, gen_fn in conditions.items():
-        flips = {"aicc": 0, "aic": 0}
-        seas56 = {"aicc": 0, "aic": 0}
-        seas42 = {"aicc": 0, "aic": 0}
-        for _ in range(N_REPS):
-            # 42-дневное окно — усечение того же 56-дневного ряда
-            # (конвенция MVP #23), а не независимый розыгрыш.
-            s56 = pd.Series(gen_fn(56, rng))
-            s42 = s56.iloc[:42]
-            for ic in ["aicc", "aic"]:
-                hs = {}
-                for w, s in [(56, s56), (42, s42)]:
-                    hs[w], _ = sktime_has_seasonal(s.astype(float), ic)
-                if hs[56]:
-                    seas56[ic] += 1
-                if hs[42]:
-                    seas42[ic] += 1
-                if hs[56] != hs[42]:
-                    flips[ic] += 1
-        sim[name][cond] = {
-            "n_reps": N_REPS,
-            "has_seasonal_at_56": seas56,
-            "has_seasonal_at_42": seas42,
-            "structure_flip_56_to_42": flips,
-        }
-        print(name, cond, sim[name][cond])
+def main() -> None:
+    print("== A/B. Реальные фикстуры: сетка окон ==")
+    real = run_real_grid()
 
-results = {"real": real, "simulation": sim}
-out = Path("/tmp/issue32_seasonal_structure_results.json")
-out.write_text(json.dumps(results, indent=1, default=str))
-print("saved", out)
+    # ---------- C: симуляция ----------
+    print("== C. Симуляция ==")
+    rng = np.random.default_rng(SEED)
+    sim: dict = {}
+    for name, path in FIXTURES.items():
+        y56 = load_daily_dynamics_csv(path).iloc[:TRAIN_WINDOW].astype(float).to_numpy()
+        sim[name] = {}
+        conditions = {
+            "seasonal": lambda n, g: synth_from(y56, True, n, g),
+            "no_seasonal_profile": lambda n, g: synth_from(y56, False, n, g),
+            "null_noise": lambda n, g: synth_null(y56, n, g),
+        }
+        for cond, gen_fn in conditions.items():
+            flips = {"aicc": 0, "aic": 0}
+            seas56 = {"aicc": 0, "aic": 0}
+            seas42 = {"aicc": 0, "aic": 0}
+            for _ in range(N_REPS):
+                # 42-дневное окно — усечение того же 56-дневного ряда
+                # (конвенция MVP #23), а не независимый розыгрыш.
+                s56 = pd.Series(gen_fn(56, rng))
+                s42 = s56.iloc[:42]
+                for ic in ["aicc", "aic"]:
+                    hs = {}
+                    for w, s in [(56, s56), (42, s42)]:
+                        hs[w], _ = sktime_has_seasonal(s.astype(float), ic)
+                    if hs[56]:
+                        seas56[ic] += 1
+                    if hs[42]:
+                        seas42[ic] += 1
+                    if hs[56] != hs[42]:
+                        flips[ic] += 1
+            sim[name][cond] = {
+                "n_reps": N_REPS,
+                "has_seasonal_at_56": seas56,
+                "has_seasonal_at_42": seas42,
+                "structure_flip_56_to_42": flips,
+            }
+            print(name, cond, sim[name][cond])
+
+    results = {"real": real, "simulation": sim}
+    out = Path("/tmp/issue32_seasonal_structure_results.json")
+    out.write_text(json.dumps(results, indent=1, default=str))
+    print("saved", out)
+
+
+if __name__ == "__main__":
+    main()
