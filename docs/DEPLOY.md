@@ -59,13 +59,18 @@ ssh dokku@<host> "sudo install -o 1000 -g 1000 -m 644 /tmp/phrases.txt \
 ssh dokku@<host>
 sudo -u 1000 git clone git@github.com:axisrow/wordstat-data.git \
     /var/lib/dokku/data/storage/wordstat-collector-data/repo
+# Ключ — ВНЕ рабочего дерева репозитория (issue #50): сервис делает `git add .`
+# в repo/, ключ внутри repo/ попал бы в коммит и уехал в origin.
 sudo install -o 1000 -g 1000 -m 600 machine_key_ed25519 \
-    /var/lib/dokku/data/storage/wordstat-collector-data/repo/.ssh_key
+    /var/lib/dokku/data/storage/wordstat-collector-data/.ssh_key
 # и указать ключ в repo/.git/config через core.sshCommand:
-#   ssh -i /app/data/repo/.ssh_key -o StrictHostKeyChecking=accept-new
+#   ssh -i /app/data/.ssh_key -o StrictHostKeyChecking=accept-new
 ```
 
-Ключ живёт на томе, а не в образе и не в `dokku config`.
+Ключ живёт на томе (рядом с `repo/`, но не внутри), а не в образе и не в
+`dokku config`. Дополнительно к размещению вне дерева `collect_service`
+исключает путь `.ssh_key` перед `git add` (и вычищает его из индекса, если он
+был добавлен ранее) — защита не полагается только на расположение файла.
 
 ### Cookies
 

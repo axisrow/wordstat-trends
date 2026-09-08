@@ -6,6 +6,7 @@ Chrome), наружу — только статус. Сбор подменяет
 """
 
 import json
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -221,3 +222,63 @@ def test_no_token_means_no_endpoint(monkeypatch):
     assert cfg.trigger_token is None
     service = (Path(__file__).resolve().parents[1] / "src" / "wordstat_trends" / "collect_service.py").read_text()
     assert "if cfg.trigger_token:" in service
+
+
+# --- issue #50: deploy key не попадает в коммит результатов -------------------
+
+FAKE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE, не настоящий ключ\n-----END OPENSSH PRIVATE KEY-----\n"
+
+
+def _init_results_repo(tmp_path: Path) -> tuple[Path, CollectService]:
+    """Мини-копия прод-раскладки: repo/results с файлом результата и сервис."""
+    repo = tmp_path / "repo"
+    results = repo / "results"
+    results.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (results / "2026-09-08.json").write_text("{}", encoding="utf-8")
+    svc = CollectService(Config(
+        phrases_file=tmp_path / "phrases.txt",
+        results_dir=results,
+        git_dir=repo,
+        phrase_delay_s=0,
+    ))
+    return repo, svc
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_commit_results_ignores_ssh_key_in_worktree(tmp_path):
+    """Фиктивный ключ в рабочем дереве не попадает ни в staged, ни в коммит."""
+    repo, svc = _init_results_repo(tmp_path)
+    (repo / ".ssh_key").write_text(FAKE_KEY, encoding="utf-8")
+
+    svc._commit_results()
+
+    tracked = _git(repo, "ls-files").split()
+    assert ".ssh_key" not in tracked, f"ключ в индексе: {tracked}"
+    assert "results/2026-09-08.json" in tracked
+    head_tree = _git(repo, "ls-tree", "-r", "--name-only", "HEAD").split()
+    assert ".ssh_key" not in head_tree, f"ключ в коммите: {head_tree}"
+    assert "results/2026-09-08.json" in head_tree
+
+
+def test_commit_results_untracks_previously_added_ssh_key(tmp_path):
+    """Худший случай: ключ уже отслеживался до защиты. Сервис вычищает его
+    из индекса своим коммитом, а не полагается на .gitignore/расположение."""
+    repo, svc = _init_results_repo(tmp_path)
+    (repo / ".ssh_key").write_text(FAKE_KEY, encoding="utf-8")
+    _git(repo, "add", ".ssh_key")
+    _git(repo, "-c", "user.name=setup", "-c", "user.email=setup@localhost",
+         "commit", "-q", "-m", "init: ключ попал в репозиторий")
+
+    svc._commit_results()
+
+    head_tree = _git(repo, "ls-tree", "-r", "--name-only", "HEAD").split()
+    assert ".ssh_key" not in head_tree, f"ключ остался в HEAD: {head_tree}"
+    assert "results/2026-09-08.json" in head_tree
+    # ключ продолжает жить на диске — удаляем только из индекса
+    assert (repo / ".ssh_key").read_text(encoding="utf-8") == FAKE_KEY

@@ -175,13 +175,28 @@ class CollectService:
             log.critical("Chrome умер посреди прогона — выходим, Dokku перезапустит")
             os._exit(1)
 
+    # Deploy key не должен попадать в индекс, даже если он лежит в рабочем
+    # дереве и/или уже был добавлен раньше (issue #50). Одного .gitignore
+    # мало: `git add .` не видит ignored-файлов, но ключ мог быть добавлен до
+    # его появления. Pathspec-исключение — при каждом add, rm --cached —
+    # страховка от уже отслеживаемого.
+    _KEY_PATHSPECS = [":!.ssh_key", ":!**/.ssh_key"]
+
     def _commit_results(self) -> None:
         """Результаты — коммитом в репозиторий (машинный ключ на томе), не в HTTP."""
         git = self.cfg.git_dir
         if not (git / ".git").is_dir():
             log.info("git-репозиторий результатов не настроен (%s), коммит пропущен", git)
             return
-        subprocess.run(["git", "-C", str(git), "add", "."], check=False, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(git), "rm", "-r", "--cached", "--ignore-unmatch",
+             "--", ".ssh_key", "**/.ssh_key"],
+            check=False, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(git), "add", ".", "--", *self._KEY_PATHSPECS],
+            check=False, capture_output=True,
+        )
         commit = subprocess.run(
             [
                 "git", "-C", str(git),
