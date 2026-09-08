@@ -77,7 +77,10 @@ sudo install -o 1000 -g 1000 -m 600 machine_key_ed25519 \
 ключ только из будущих коммитов — история остаётся, а репозиторий
 `wordstat-data` доступен в рамках GitHub. Правильная процедура после такого
 инцидента — **ротация ключа**, а не только вычистка: см.
-[#58](https://github.com/axisrow/wordstat-trends/issues/58).
+[#58](https://github.com/axisrow/wordstat-trends/issues/58). Полный цикл
+(проверка истории → генерация нового ключа → регистрация на GitHub → отзыв
+старых → установка на том → проверка push) автоматизирован скриптом
+`scripts/rotate_deploy_key.sh <dokku-host> <app-name>`.
 
 ### Cookies
 
