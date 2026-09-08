@@ -33,8 +33,16 @@
    намеренно: корреляция конкатенации честно учитывает, что годовой блок
    несёт больше координат; дополнительно репортится поэлементная
    корреляция каждого блока отдельно, так что эффект длины блока виден
-   явно). Блок с has_seasonal=False после z-скоринга — нулевой вектор,
-   similarity с его участием — NaN (не 0!).
+   явно). Инвариант NaN-семантики: similarity с участием блока
+   has_seasonal=False (или вырожденного константного) — NaN, ДЛЯ ВСЕХ
+   представлений, включая combined: combined-сравнение пары возвращает
+   NaN, если хотя бы один из ЧЕТЫРЁХ участвующих блоков не определён.
+   Подмешивать нулевой блок-маркер в живую конкатенацию нельзя: она дала
+   бы определённое число, в котором «блок-ничто» одной фразы коррелирует
+   с нулевым блоком партнёра и разбавляет живые блоки — сравнение
+   «combined против одинарных sp» было бы искажено. Цена инварианта
+   честно видна в отчёте: пары с high_freq (нет недельного блока,
+   итерация 2) в combined не определены так же, как в sp7.
 3. Структура представления: три попарные корреляции между тремя фразами
    для каждого из трёх представлений {sp7, sp12, combined} + ближайший
    сосед каждой фразы в каждом представлении.
@@ -78,11 +86,13 @@ from scripts.experiment_vector_d import (
     DAILY_FIXTURES,
     FIXTURES,
     TRAIN_WINDOW_DAYS,
+    _fit_autoets,
     compare_seasonal_cycles_within_full_series,
     fit_autoets_vector,
     load_daily_dynamics_csv,
     load_dynamics_csv,
     truncate_series,
+    vector_from_fitted,
 )
 
 PHRASES = [
@@ -120,6 +130,9 @@ class CombinedVector:
 
     block7/block12 хранятся до z-скоринга для отчёта (model_spec,
     has_seasonal); z7/z12 — блоки, вошедшие в combined.
+    monthly_fitted — уже посчитанный _fit_autoets месячного ряда (не
+    сериализуется в to_dict): переиспользуется диагностикой циклов, чтобы
+    месячный ряд фитился один раз (issue #33, находка 3).
     """
 
     label: str
@@ -129,6 +142,7 @@ class CombinedVector:
     has_seasonal12: bool
     z7: np.ndarray
     z12: np.ndarray
+    monthly_fitted: object = None
 
     @property
     def combined(self) -> np.ndarray:
@@ -176,11 +190,16 @@ def build_combined_vector(
     daily_drop — укорочение дневного train-окна с конца (0 = полное окно
     56 дней). Месячный ряд не укорачивается никогда (рефит неисполним,
     итерация 1) — параметра нет принципиально, не забыт.
+
+    Месячный ряд фитится здесь ОДИН раз (_fit_autoets), вектор извлекается
+    vector_from_fitted, а fitted сохраняется в CombinedVector.monthly_fitted
+    для диагностики циклов — без дублирующего рефита (issue #33, находка 3).
     """
     daily_window = truncate_series(daily_series, daily_drop) if daily_drop else daily_series
 
     vec7 = fit_autoets_vector(daily_window, sp=7, calendar_anchor="weekday", information_criterion="aic")
-    vec12 = fit_autoets_vector(monthly_series, sp=12, calendar_anchor="month", information_criterion="aic")
+    monthly_fitted = _fit_autoets(monthly_series, sp=12, information_criterion="aic")
+    vec12 = vector_from_fitted(monthly_fitted, monthly_series, sp=12, calendar_anchor="month")
 
     return CombinedVector(
         label=label,
@@ -190,36 +209,74 @@ def build_combined_vector(
         has_seasonal12=vec12.has_seasonal,
         z7=zscore_block(vec7.seasonal, vec7.has_seasonal),
         z12=zscore_block(vec12.seasonal, vec12.has_seasonal),
+        monthly_fitted=monthly_fitted,
     )
 
 
 REPRESENTATIONS = ("sp7", "sp12", "combined")
 
 
-def pairwise_structure(vectors: dict[str, CombinedVector]) -> dict:
-    """Попарные корреляции трёх фраз в трёх представлениях.
+def block_defined(vec: CombinedVector, which: str) -> bool:
+    """Определён ли блок вектора для сравнения: заявленная сезонность есть
+    И z-скоренный блок не вырожден в нулевой маркер.
 
-    sim(X,Y) для combined — корреляция конкатенации z-блоков; для sp7/sp12 —
+    z-скоренный живой блок имеет std ровно 1; has_seasonal=False и
+    константный сезонный профиль оба дают нулевой вектор — для similarity
+    это один и тот же случай «блока нет» (см. zscore_block).
+    """
+    z = vec.z7 if which == "sp7" else vec.z12
+    has = vec.has_seasonal7 if which == "sp7" else vec.has_seasonal12
+    return bool(has) and float(z.std()) != 0.0
+
+
+def similarity(va: CombinedVector, vb: CombinedVector, repr_name: str) -> float:
+    """Попарная близость двух фраз в представлении repr_name.
+
+    Единая точка вычисления sim для pairwise_structure и nearest_neighbors
+    (две независимые реализации одной метрики разошлись бы молча).
+
+    Инвариант NaN-семантики (единый для всех представлений): NaN, если
+    хотя бы один УЧАСТУЮЩИЙ блок не определён:
+    - sp7/sp12: не определён соответствующий блок хотя бы у одной фразы
+      (pearson_or_nan на нулевом маркере возвращает NaN сам);
+    - combined: не определён любой из ЧЕТЫРЁХ участвующих блоков.
+      Корреляция полной конкатенации при живом втором блоке вернула бы
+      ОПРЕДЕЛЁННОЕ число, в котором нулевой блок-маркер одной фразы
+      коррелирует с нулевым блоком партнёра и разбавляет живые блоки, —
+      такое сравнение объявлено недопустимым (см. дизайн, пункт 2).
+    """
+    if repr_name == "sp7":
+        return pearson_or_nan(va.z7, vb.z7)
+    if repr_name == "sp12":
+        return pearson_or_nan(va.z12, vb.z12)
+    if repr_name != "combined":
+        raise ValueError(f"Неизвестное представление: {repr_name!r}")
+    for vec in (va, vb):
+        if not (block_defined(vec, "sp7") and block_defined(vec, "sp12")):
+            return float("nan")
+    return pearson_or_nan(va.combined, vb.combined)
+
+
+def pairwise_structure(vectors: dict[str, CombinedVector]) -> dict:
+    """Попарные корреляции фраз в трёх представлениях.
+
+    sim(X,Y) для combined — корреляция конкатенации z-блоков (только при
+    всех четырёх определённых блоках, см. similarity); для sp7/sp12 —
     корреляция соответствующего одиночного блока (то же значение, что и
     блок-корреляция combined, приведено отдельно, чтобы сравнение
     «объединённый против одинарных» было прямым).
 
-    NaN в sim — легитимный исход (один из блоков отсутствует/константный,
-    см. pearson_or_nan), не ошибка; весь следующий код относится к NaN
+    NaN в sim — легитимный исход (участвующий блок отсутствует/константный,
+    см. similarity), не ошибка; весь следующий код относится к NaN
     как к «сравнение не определено», никогда как к 0 или 1.
     """
     structure: dict = {}
     for repr_name in REPRESENTATIONS:
         sims = {}
-        for i, a in enumerate(PHRASES):
-            for b in PHRASES[i + 1 :]:
-                va, vb = vectors[a], vectors[b]
-                if repr_name == "sp7":
-                    sim = pearson_or_nan(va.z7, vb.z7)
-                elif repr_name == "sp12":
-                    sim = pearson_or_nan(va.z12, vb.z12)
-                else:
-                    sim = pearson_or_nan(va.combined, vb.combined)
+        keys = list(vectors)
+        for i, a in enumerate(keys):
+            for b in keys[i + 1 :]:
+                sim = similarity(vectors[a], vectors[b], repr_name)
                 sims[f"{a} <-> {b}"] = round(sim, 6) if not math.isnan(sim) else None
         structure[repr_name] = sims
     return structure
@@ -238,18 +295,9 @@ def nearest_neighbors(vectors: dict[str, CombinedVector]) -> dict:
     for repr_name in REPRESENTATIONS:
         per_phrase = {}
         for phrase in vectors:
-            sims = {}
-            for other in vectors:
-                if other == phrase:
-                    continue
-                va, vb = vectors[phrase], vectors[other]
-                if repr_name == "sp7":
-                    sim = pearson_or_nan(va.z7, vb.z7)
-                elif repr_name == "sp12":
-                    sim = pearson_or_nan(va.z12, vb.z12)
-                else:
-                    sim = pearson_or_nan(va.combined, vb.combined)
-                sims[other] = sim
+            sims = {
+                other: similarity(vectors[phrase], vectors[other], repr_name) for other in vectors if other != phrase
+            }
             defined = {k: v for k, v in sims.items() if not math.isnan(v)}
             if defined:
                 best = max(defined, key=defined.get)  # type: ignore[arg-type]
@@ -258,6 +306,25 @@ def nearest_neighbors(vectors: dict[str, CombinedVector]) -> dict:
                 per_phrase[phrase] = {"neighbor": None, "sim": None, "undefined": True}
         result[repr_name] = per_phrase
     return result
+
+
+def neighbor_preserved(before: dict, after: dict) -> dict:
+    """Сохранился ли ближайший сосед фразы между двумя прогонами.
+
+    undefined→undefined «сохранившимся» НЕ считается: у фразы нет соседа
+    в обоих прогонах — сравнивать нечего, и засчитывать это в стабильность
+    значило бы завышать флаг («соседи сохранились» ≠ «соседи не
+    определены дважды»). preserved вычисляется только по парам, где оба
+    соседа определены; число пар, оставшихся undefined в обоих прогонах,
+    репортится отдельно.
+    """
+    both_defined = before["neighbor"] is not None and after["neighbor"] is not None
+    both_undefined = before["undefined"] and after["undefined"]
+    return {
+        "preserved": bool(both_defined and before["neighbor"] == after["neighbor"]),
+        "undefined_in_both": bool(both_undefined),
+        "undefined_in_either": bool(before["undefined"] or after["undefined"]),
+    }
 
 
 def structure_fingerprint(structure: dict[str, float | None]) -> list[str]:
@@ -294,7 +361,11 @@ def main() -> int:
         # Диагностика месячного блока — тот же одноразовый фит-статистика,
         # что в итерации 1 (сравнение циклов внутри одного фита), здесь
         # включена в отчёт, потому что месячный блок теперь ЧАСТЬ вектора.
-        entry["monthly_cycle_comparison"] = compare_seasonal_cycles_within_full_series(monthly_series[label])
+        # Фит НЕ дублируется: передаётся уже посчитанный
+        # vec.monthly_fitted (issue #33, находка 3).
+        entry["monthly_cycle_comparison"] = compare_seasonal_cycles_within_full_series(
+            monthly_series[label], fitted_forecaster=vec.monthly_fitted
+        )
         report["phrases"][label] = entry
 
     # --- Структура представления: одинарные sp против объединённого ---
@@ -325,24 +396,41 @@ def main() -> int:
             "blocks": {label: refit_vectors[label].to_dict() for label in PHRASES},
             "pairwise_similarity": refit_structure,
             "fingerprint_preserved": {name: refit_fingerprints[name] == fingerprints[name] for name in REPRESENTATIONS},
-            "nearest_neighbor_preserved": {
-                name: all(neighbors[name][p]["neighbor"] == refit_neighbors[name][p]["neighbor"] for p in PHRASES)
+            # preserved считается только по парам с ОБОИМИ определёнными
+            # соседями; undefined→undefined репортится отдельно (см.
+            # neighbor_preserved) и в «сохранившиеся» не засчитывается.
+            "nearest_neighbors": {
+                name: {p: neighbor_preserved(neighbors[name][p], refit_neighbors[name][p]) for p in PHRASES}
                 for name in REPRESENTATIONS
             },
         }
     report["refits"] = refit_results
 
-    # Сводный вердикт устойчивости структуры: у combined отпечаток и соседи
-    # сохранились на обоих рефитах?
+    # Сводный вердикт устойчивости структуры combined: отпечаток
+    # сохранился; соседи — stable только там, где ОПРЕДЕЛЕНЫ в обоих
+    # прогонах. undefined→undefined ни в «стабильные», ни в «нестабильные»
+    # не попадает: сравнивать нечего — репортится отдельным счётчиком,
+    # чтобы ни завышать, ни занижать флаг (ревью PR #47).
+    combined_neighbor_details = [r["nearest_neighbors"]["combined"] for r in refit_results.values()]
     combined_fingerprint_stable = all(r["fingerprint_preserved"]["combined"] for r in refit_results.values())
-    combined_neighbors_stable = all(r["nearest_neighbor_preserved"]["combined"] for r in refit_results.values())
+    defined_pairs = [
+        (detail, p) for detail in combined_neighbor_details for p in PHRASES if not detail[p]["undefined_in_either"]
+    ]
+    combined_undefined_in_both = {
+        p: all(detail[p]["undefined_in_both"] for detail in combined_neighbor_details) for p in PHRASES
+    }
     report["representation_stability_combined"] = {
         "fingerprint_stable_on_all_refits": combined_fingerprint_stable,
-        "nearest_neighbors_stable_on_all_refits": combined_neighbors_stable,
+        "defined_neighbors_all_preserved_on_all_refits": all(detail[p]["preserved"] for detail, p in defined_pairs),
+        "n_defined_neighbor_pairs_compared": len(defined_pairs),
+        "neighbors_undefined_in_both_refits": combined_undefined_in_both,
         "caveat": (
             "проверена только sp=7-часть представления (дневные рефиты); "
             "месячный блок рефит неисполним на 24 точках — устойчивость "
-            "combined-вектора в целом НЕ подтверждается этим прогоном"
+            "combined-вектора в целом НЕ подтверждается этим прогоном. "
+            "undefined→undefined пары не входят ни в stable, ни в счёт "
+            "сравненных (см. neighbors_undefined_in_both_refits и "
+            "n_defined_neighbor_pairs_compared)."
         ),
     }
 

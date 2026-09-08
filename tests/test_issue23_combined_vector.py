@@ -11,9 +11,13 @@ from scripts.issue23_combined_vector import (
     DAILY_REFIT_DROPS,
     PHRASES,
     CombinedVector,
+    block_defined,
     build_combined_vector,
     nearest_neighbors,
+    neighbor_preserved,
+    pairwise_structure,
     pearson_or_nan,
+    similarity,
     structure_fingerprint,
     zscore_block,
 )
@@ -102,6 +106,60 @@ def test_nearest_neighbor_picks_max_over_defined_similarities():
     nn = nearest_neighbors({"a": a, "b": b, "c": c})
     assert nn["combined"]["a"]["neighbor"] == "c"
     assert nn["combined"]["b"]["neighbor"] is not None
+
+
+def test_combined_similarity_nan_when_any_participating_block_absent():
+    # Инвариант (ревью PR #47): combined-similarity — NaN, если хотя бы
+    # один из ЧЕТЫРЁХ участвующих блоков не определён. Частично живой
+    # combined (один блок есть) не даёт определённого числа: нулевой
+    # блок-маркер не подмешивается в живую конкатенацию.
+    full = _make_combined(np.arange(7, dtype=float), np.arange(12, dtype=float), label="full")
+    no_weekly = _make_combined(np.zeros(7), np.arange(12, dtype=float), has7=False, label="no_weekly")
+    assert math.isnan(similarity(full, no_weekly, "combined"))
+    assert math.isnan(similarity(no_weekly, full, "combined"))
+
+
+def test_combined_similarity_defined_when_all_four_blocks_present():
+    a = _make_combined(np.arange(7, dtype=float), np.arange(12, dtype=float), label="a")
+    b = _make_combined(np.arange(7, dtype=float) * 2, np.arange(12, dtype=float) * 2, label="b")
+    assert similarity(a, b, "combined") == pytest.approx(1.0)
+
+
+def test_block_defined_false_for_absent_and_degenerate_blocks():
+    alive = _make_combined(np.arange(7, dtype=float), np.arange(12, dtype=float), label="alive")
+    absent = _make_combined(np.zeros(7), np.arange(12, dtype=float), has7=False, label="absent")
+    degenerate = _make_combined(np.full(7, 3.0), np.arange(12, dtype=float), label="degenerate")
+    assert block_defined(alive, "sp7") is True
+    assert block_defined(absent, "sp7") is False
+    assert block_defined(degenerate, "sp7") is False
+
+
+def test_pairwise_structure_combined_is_null_with_block_absent():
+    full = _make_combined(np.arange(7, dtype=float), np.arange(12, dtype=float), label="full")
+    no_weekly = _make_combined(np.zeros(7), np.arange(12, dtype=float), has7=False, label="no_weekly")
+    structure = pairwise_structure({"full": full, "no_weekly": no_weekly})
+    assert structure["combined"]["full <-> no_weekly"] is None
+    assert structure["sp12"]["full <-> no_weekly"] == pytest.approx(1.0)
+
+
+def test_neighbor_preserved_undefined_in_both_is_not_counted_as_preserved():
+    undefined = {"neighbor": None, "sim": None, "undefined": True}
+    result = neighbor_preserved(undefined, undefined)
+    assert result["preserved"] is False
+    assert result["undefined_in_both"] is True
+    assert result["undefined_in_either"] is True
+
+
+def test_neighbor_preserved_change_and_stability_of_defined_neighbors():
+    before_mid = {"neighbor": "mid", "sim": 0.9, "undefined": False}
+    after_mid = {"neighbor": "mid", "sim": 0.8, "undefined": False}
+    after_phone = {"neighbor": "phone", "sim": 0.8, "undefined": False}
+    undefined_neighbor = {"neighbor": None, "sim": None, "undefined": True}
+    assert neighbor_preserved(before_mid, after_mid)["preserved"] is True
+    assert neighbor_preserved(before_mid, after_phone)["preserved"] is False
+    # defined→undefined — тоже не «сохранилось»: сосед перестал существовать.
+    assert neighbor_preserved(before_mid, undefined_neighbor)["preserved"] is False
+    assert neighbor_preserved(before_mid, undefined_neighbor)["undefined_in_both"] is False
 
 
 def test_structure_fingerprint_orders_by_similarity_desc_and_puts_none_last():
