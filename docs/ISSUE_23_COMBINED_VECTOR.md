@@ -16,8 +16,11 @@
   пороги окна для детекции sp=7.
 
 Скрипт: [`scripts/issue23_combined_vector.py`](../scripts/issue23_combined_vector.py).
-Запуск: `PYTHONPATH=. python -m scripts.issue23_combined_vector`
+Запуск из корня репозитория: `python scripts/issue23_combined_vector.py`
 (таблицы — stdout, полный JSON — `/tmp/issue23_combined_vector_results.json`).
+`PYTHONPATH` не нужен: скрипт сам добавляет корень репозитория в `sys.path`
+(issue #52); воспроизводимость команды закреплена subprocess-тестом в
+[`tests/test_issue23_combined_vector.py`](../tests/test_issue23_combined_vector.py).
 
 **Дата прогона:** 2026-09-08. Данные — те же фикстуры: дневные
 (56-дневное train-окно 23.06–17.08.2026, `[8]*7` подтверждено загрузчиком)

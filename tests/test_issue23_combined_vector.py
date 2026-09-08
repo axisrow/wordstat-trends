@@ -2,6 +2,9 @@
 объединённый вектор sp=7 + sp=12 как представление спроса)."""
 
 import math
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -219,3 +222,22 @@ def test_build_combined_vector_high_freq_has_no_weekly_block():
     assert vec.has_seasonal7 is False
     assert vec.has_seasonal12 is True
     assert np.array_equal(vec.z7, np.zeros(7))
+
+
+def test_documented_cli_command_runs_from_repo_root():
+    """issue #52: документированная команда обязана работать из корня
+    репозитория без PYTHONPATH — ровно как в докстринге скрипта и
+    docs/ISSUE_23_COMBINED_VECTOR.md. До бутстрапа sys.path в скрипте
+    запуск файлом падал: ModuleNotFoundError: No module named 'scripts'."""
+    repo_root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "scripts/issue23_combined_vector.py"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    # Скрипт печатает полный JSON-отчёт в stdout; наличие ключа — дымовая
+    # проверка, что отработал сам конвейер, а не пустой выход.
+    assert '"representations"' in result.stdout

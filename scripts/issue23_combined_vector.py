@@ -82,6 +82,13 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
 import numpy as np
 import pandas as pd
 
+# Запуск файлом (python scripts/issue23_combined_vector.py) кладёт в sys.path
+# каталог scripts/, а не корень репозитория — без этого бутстрапа импорт
+# scripts.experiment_vector_d падает ModuleNotFoundError (issue #52).
+# При импорте модуля из тестов (корень уже в sys.path) вставка безвредна:
+# дубликат пути не меняет разрешение импорта.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from scripts.experiment_vector_d import (
     DAILY_FIXTURES,
     FIXTURES,
