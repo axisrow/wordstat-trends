@@ -282,3 +282,45 @@ def test_commit_results_untracks_previously_added_ssh_key(tmp_path):
     assert "results/2026-09-08.json" in head_tree
     # ключ продолжает жить на диске — удаляем только из индекса
     assert (repo / ".ssh_key").read_text(encoding="utf-8") == FAKE_KEY
+
+
+class _Proc:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_commit_results_skips_commit_when_rm_fails_and_key_stays_tracked(
+    tmp_path, monkeypatch, caplog
+):
+    """Ревью PR #55: отказ `git rm --cached` не должен проходить молча.
+    Если ключ остался в индексе — коммит и пуш пропускаются (иначе ключ
+    уехал бы в origin), ошибки логируются."""
+    import logging
+
+    repo, svc = _init_results_repo(tmp_path)
+    (repo / ".ssh_key").write_text(FAKE_KEY, encoding="utf-8")
+    _git(repo, "add", ".ssh_key")
+    _git(repo, "-c", "user.name=setup", "-c", "user.email=setup@localhost",
+         "commit", "-q", "-m", "init: ключ попал в репозиторий")
+
+    real_run = subprocess.run
+
+    def rm_failing_run(cmd, **kwargs):
+        if "rm" in cmd[:4]:  # только git rm --cached падает, остальное — честно
+            return _Proc(returncode=1, stderr="error: index file corrupt")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("wordstat_trends.collect_service.subprocess.run", rm_failing_run)
+
+    with caplog.at_level(logging.WARNING, logger="wordstat_trends.collect_service"):
+        svc._commit_results()
+
+    # отказ зафиксирован в логах, с stderr
+    assert any("git rm --cached" in r.message and "index file corrupt" in r.message
+               for r in caplog.records)
+    assert any("остался в индексе" in r.message for r in caplog.records)
+    # коммит не сделан: HEAD остался setup-коммитом, результат не уехал
+    log_lines = _git(repo, "log", "--format=%s").splitlines()
+    assert log_lines == ["init: ключ попал в репозиторий"]

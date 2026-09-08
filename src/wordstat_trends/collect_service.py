@@ -188,15 +188,32 @@ class CollectService:
         if not (git / ".git").is_dir():
             log.info("git-репозиторий результатов не настроен (%s), коммит пропущен", git)
             return
-        subprocess.run(
+        rm = subprocess.run(
             ["git", "-C", str(git), "rm", "-r", "--cached", "--ignore-unmatch",
              "--", ".ssh_key", "**/.ssh_key"],
-            check=False, capture_output=True,
+            check=False, capture_output=True, text=True,
         )
-        subprocess.run(
+        if rm.returncode != 0:
+            log.warning("git rm --cached для ключа не удался (rc=%s): %s",
+                        rm.returncode, rm.stderr.strip())
+        add = subprocess.run(
             ["git", "-C", str(git), "add", ".", "--", *self._KEY_PATHSPECS],
-            check=False, capture_output=True,
+            check=False, capture_output=True, text=True,
         )
+        if add.returncode != 0:
+            log.warning("git add результатов не удался (rc=%s): %s",
+                        add.returncode, add.stderr.strip())
+        # Страховка поверх кода возврата rm: если ключ каким-то образом остался
+        # в индексе (битый индекс и т.п.), коммитить нельзя — коммит уехал бы
+        # в origin вместе с ключом.
+        still_tracked = subprocess.run(
+            ["git", "-C", str(git), "ls-files", "--", ".ssh_key", "**/.ssh_key"],
+            check=False, capture_output=True, text=True,
+        )
+        if still_tracked.stdout.strip():
+            log.error("deploy key остался в индексе после исключения — "
+                      "коммит и пуш результатов пропущены")
+            return
         commit = subprocess.run(
             [
                 "git", "-C", str(git),
