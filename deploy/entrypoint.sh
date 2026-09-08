@@ -58,50 +58,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# --- Сбор по расписанию ------------------------------------------------------
+# --- Сервис сбора: расписание + HTTP-эндпоинт запуска (issue #24) -------------
+# Суточный цикл (как в #8: первый прогон сразу, далее раз в сутки, паузы между
+# фразами, коммит результатов) и узкий HTTP-эндпоинт живут в одном
+# Python-процессе (src/wordstat_trends/collect_service.py) и делят одну
+# блокировку: запрос по HTTP при активном сборе получает 409, а не второй Chrome.
 # Известное ограничение (axisrow/wordstat-cli#2): прогон может упасть на середине.
 # Расписание запускать можно, полноту одного прогона не гарантируем —
 # докачка недостающих фраз отдельной задачей.
-collect_once() {
-    # Cookies подкладываются в профиль до старта сбора (scripts/upload_cookies.sh
-    # на хосте). В логи содержимое и даже полный путь не печатаем.
-    if [ ! -f "$PHRASES_FILE" ]; then
-        echo "entrypoint: список фраз не найден (${PHRASES_FILE} не существует), прогон пропущен"
-        return 0
-    fi
+#
+# TRIGGER_TOKEN задаётся через dokku config (не в образ и не в репозиторий);
+# без него HTTP-эндпоинт не поднимается, расписание работает.
+CHROME_PID="$CHROME_PID" python -m wordstat_trends.collect_service &
+SERVICE_PID=$!
 
-    while IFS= read -r phrase; do
-        case "$phrase" in ""|\#*) continue ;; esac
-        # Живость Chrome проверяем на каждой фразе: если браузер упал посреди
-        # прогона, не ждём суток — выходим, рестарт-политика Dokku поднимет
-        # контейнер заново (см. docs/DEPLOY.md → «Рестарт-политика»).
-        kill -0 "$CHROME_PID" 2>/dev/null || {
-            echo "entrypoint: Chrome умер посреди прогона — выходим, Dokku перезапустит" >&2
-            exit 1
-        }
-        echo "entrypoint: сбор фразы <${phrase}>"
-        wordstat collect "$phrase" --output-dir "$RESULTS_DIR" || {
-            echo "entrypoint: фраза <${phrase}> не собрана, продолжаем (см. wordstat-cli#2)" >&2
-        }
-        sleep "$PHRASE_DELAY_S"
-    done < "$PHRASES_FILE"
-
-    # Результаты коммитятся в репозиторий машинным ключом с правом записи.
-    # Ключ — на томе; здесь он только используется, но не копируется и не логируется.
-    if [ -d "$GIT_DIR/.git" ]; then
-        git -C "$GIT_DIR" add . >/dev/null \
-            && git -C "$GIT_DIR" -c user.name=collector -c user.email=collector@localhost \
-                commit -m "chore(data): автосбор $(date -u +%Y-%m-%d)" --quiet \
-            && git -C "$GIT_DIR" push --quiet origin HEAD:main \
-            && echo "entrypoint: результаты закоммичены и отправлены" \
-            || echo "entrypoint: коммит/пуш результатов не удался (не фатально)" >&2
-    else
-        echo "entrypoint: git-репозиторий результатов не настроен (${GIT_DIR}), коммит пропущен"
-    fi
+cleanup() {
+    kill "$SERVICE_PID" 2>/dev/null || true
+    kill "$CHROME_PID" 2>/dev/null || true
 }
+trap cleanup EXIT INT TERM
 
-# Первый прогон сразу (при деплое удобно видеть, что всё живо), далее — раз в сутки.
-while kill -0 "$CHROME_PID" 2>/dev/null; do
-    collect_once
-    sleep "$COLLECT_INTERVAL_S"
+# Умер сервис или Chrome (сервис сам завершается кодом 1 при смерти Chrome) —
+# выходим, рестарт-политика Dokku поднимет контейнер заново.
+while kill -0 "$CHROME_PID" 2>/dev/null && kill -0 "$SERVICE_PID" 2>/dev/null; do
+    sleep 5
 done
+exit 1

@@ -52,8 +52,12 @@ def test_wait_depends_on_curl_and_image_has_curl():
 
 
 def test_entrypoint_has_pause_between_phrases():
-    assert "PHRASE_DELAY_S" in entrypoint()
-    assert "sleep" in entrypoint()
+    """Пауза между фразами (предохранитель от капчи) живёт в collect_service
+    (issue #24 перенёс цикл сбора из шелла в Python)."""
+    service = (REPO / "src" / "wordstat_trends" / "collect_service.py").read_text()
+    assert "phrase_delay_s" in service
+    assert "time.sleep" in service
+    assert "sleep" in entrypoint()  # watch-loop за живостью Chrome/сервиса
 
 
 def test_upload_cookies_never_prints_content():
@@ -64,3 +68,24 @@ def test_upload_cookies_never_prints_content():
     # файл уходит scp-потоком и в /tmp на хосте остаётся с правами 600
     assert "install -o 1000 -g 1000 -m 600" in script
     assert "rm -f" in script
+
+
+def test_entrypoint_runs_collect_service():
+    """Цикл сбора и HTTP-эндпоинт (issue #24) — в одном Python-процессе."""
+    assert "python -m wordstat_trends.collect_service" in entrypoint()
+
+
+def test_dockerfile_installs_project_sources():
+    """collect_service запускается как модуль проекта — src обязан быть в образе."""
+    copies = [line for line in dockerfile().splitlines() if line.startswith("COPY ")]
+    assert any(line.startswith("COPY src") for line in copies)
+    assert "uv sync" in dockerfile()
+
+
+def test_no_cdp_proxy_in_service():
+    """Эндпоинт не проксирует CDP и не принимает команды браузеру: наружу только
+    /collect и /status, никаких путей к /json-эндпоинтам Chrome."""
+    service = (REPO / "src" / "wordstat_trends" / "collect_service.py").read_text()
+    assert '"/collect"' in service
+    assert '"/status"' in service
+    assert "/json/list" not in service and "/json/new" not in service
