@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from wordstat_trends.collect.config import DynamicsWindow, default_window
+from wordstat_trends.cookies_import import CookiesImportError, import_session_from_file
 
 log = logging.getLogger("wordstat_trends.collect_service")
 
@@ -43,6 +44,7 @@ MAX_PHRASE_LEN = 512
 class Config:
     cdp_port: int = 9222
     phrases_file: Path = Path("/app/data/phrases.txt")
+    cookies_file: Path = Path("/app/data/cookies.txt")
     results_dir: Path = Path("/app/data/results")
     git_dir: Path = Path("/app/data/repo")
     phrase_delay_s: float = 30.0
@@ -61,6 +63,7 @@ class Config:
         return cls(
             cdp_port=int(os.environ.get("CDP_PORT", "9222")),
             phrases_file=Path(os.environ.get("PHRASES_FILE", "/app/data/phrases.txt")),
+            cookies_file=Path(os.environ.get("COOKIES_FILE", "/app/data/cookies.txt")),
             results_dir=Path(os.environ.get("RESULTS_DIR", "/app/data/results")),
             git_dir=Path(os.environ.get("GIT_DIR", "/app/data/repo")),
             phrase_delay_s=float(os.environ.get("PHRASE_DELAY_S", "30")),
@@ -92,6 +95,30 @@ class _RunStatus:
             "failed": self.failed,
             "last_error": self.last_error,
         }
+
+
+def bootstrap_session(cfg: Config) -> None:
+    """Импорт cookies с тома и проверка авторизации ДО первого сбора (issue #51).
+
+    ``scripts/upload_cookies.sh`` кладёт файл и перезапускает контейнер —
+    здесь файл читается (только Яндекса-домены, формат Netscape cookies.txt),
+    куки ставятся в Chrome через CDP, авторизация подтверждается тем же
+    probe, что и живой сбор. Любая неудача завершает процесс (fail closed):
+    сбор без сессии упирается в страницу входа на первой же фразе и жжёт
+    суточные паузы. Файла нет — работаем с уже авторизованным профилем
+    на томе; протухание такой сессии по-прежнему ловит сам ``wordstat collect``.
+
+    Cookies никогда не логируются и не проходят через env — только путь
+    к файлу в ``COOKIES_FILE``.
+    """
+    if not cfg.cookies_file.is_file():
+        log.info("файл cookies не найден (%s) — сессия берётся из профиля на томе", cfg.cookies_file)
+        return
+    try:
+        import_session_from_file(cfg.cookies_file, f"http://127.0.0.1:{cfg.cdp_port}")
+    except CookiesImportError as exc:
+        log.error("импорт cookies не удался: %s — сбор не запускаем (fail closed)", exc)
+        raise SystemExit(2) from exc
 
 
 class CollectService:
@@ -427,6 +454,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     cfg = Config.from_env()
+    # До планировщика и HTTP: сбор и эндпоинт не поднимаются без сессии,
+    # когда она обязана прийти из cookies.txt (issue #51).
+    bootstrap_session(cfg)
     svc = CollectService(cfg)
     threading.Thread(target=svc.scheduler_loop, daemon=True, name="scheduler").start()
     if cfg.trigger_token:

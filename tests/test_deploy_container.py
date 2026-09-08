@@ -89,3 +89,21 @@ def test_no_cdp_proxy_in_service():
     assert '"/collect"' in service
     assert '"/status"' in service
     assert "/json/list" not in service and "/json/new" not in service
+
+
+def test_entrypoint_passes_cookies_path_to_service():
+    """issue #51: сервису передаётся ПУТЬ к cookies.txt (COOKIES_FILE), сам
+    entrypoint содержимое не читает и не печатает."""
+    script = entrypoint()
+    assert 'COOKIES_FILE="$COOKIES_FILE"' in script
+    assert "python -m wordstat_trends.collect_service" in script
+    assert 'cat "$COOKIES_FILE"' not in script
+    assert "$COOKIES_FILE" not in script.replace('COOKIES_FILE="$COOKIES_FILE"', "")
+
+
+def test_service_bootstraps_cookies_before_scheduler():
+    """issue #51: импорт cookies и проверка авторизации идут до запуска
+    планировщика и HTTP-эндпоинта (fail closed — без сессии сбор не стартует)."""
+    service = (REPO / "src" / "wordstat_trends" / "collect_service.py").read_text()
+    assert "bootstrap_session(cfg)" in service
+    assert service.index("bootstrap_session(cfg)") < service.index("target=svc.scheduler_loop")
