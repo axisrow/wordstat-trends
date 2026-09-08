@@ -144,6 +144,9 @@ def run_real_grid() -> dict:
                 has_seas, spec = sktime_has_seasonal(series.astype(float), ic)
                 entry[ic] = {"has_seasonal": has_seas, "spec": spec}
             grid = statsmodels_grid(y)
+            # Полная сетка сохраняется в ячейке — guardrail-тест (#44) и JSON
+            # переиспользуют её без рефитов.
+            entry["grid"] = grid
             best_s = best_of(grid, True, "aicc")
             best_n = best_of(grid, False, "aicc")
             best_s_aic = best_of(grid, True, "aic")

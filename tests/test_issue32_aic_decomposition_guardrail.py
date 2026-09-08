@@ -16,13 +16,10 @@ import math
 
 import pytest
 
-from scripts.experiment_vector_d import load_daily_dynamics_csv, truncate_series
 from scripts.issue32_seasonal_structure import (
     FIXTURES,
-    TRAIN_WINDOW,
     WINDOWS,
     run_real_grid,
-    statsmodels_grid,
 )
 
 
@@ -43,6 +40,10 @@ def test_sign_of_delta_criteria_matches_autoets_verdict(real_grid, name, w):
     for ic in ("aic", "aicc"):
         verdict = entry[ic]["has_seasonal"]
         delta = entry["decomp"][f"d_{ic}_seasonal_minus_non"]
+        assert math.isfinite(delta), (
+            f"{name}/w={w}/{ic}: Δ={delta} — критерий вырожден (inf у обеих "
+            "групп), знак не определён"
+        )
         assert (delta < 0) == verdict, (
             f"{name}/w={w}/{ic}: вердикт AutoETS has_seasonal={verdict}, "
             f"но знак Δ={delta:.3f} говорит об обратном"
@@ -51,17 +52,13 @@ def test_sign_of_delta_criteria_matches_autoets_verdict(real_grid, name, w):
 
 @pytest.mark.parametrize("name", sorted(FIXTURES.keys()))
 @pytest.mark.parametrize("w", WINDOWS)
-def test_criterion_identity_holds_with_df_model(name, w):
+def test_criterion_identity_holds_with_df_model(real_grid, name, w):
     """Тождество критерия на каждом фите сетки: df_model = len(params) + 1
     (sigma2 профилируется и не входит в params), и -2*loglik + 2*df_model
     совпадает с res.aic, а формула AICc — с res.aicc. Подсчёт k = len(params)
     (недосчёт +1) делает любое из равенств ложным.
     """
-    path = FIXTURES[name]
-    full = load_daily_dynamics_csv(path).iloc[:TRAIN_WINDOW]
-    y = truncate_series(full, TRAIN_WINDOW - w).astype(float).to_numpy()
-
-    grid = statsmodels_grid(y)
+    grid = real_grid[name][w]["grid"]
     assert grid, f"{name}/w={w}: пустая сетка"
     checked = 0
     for fit in grid:
