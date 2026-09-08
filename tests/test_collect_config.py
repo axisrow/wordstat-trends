@@ -74,3 +74,20 @@ def test_rejects_end_in_future():
 
 def test_max_window_month_constant_matches_interface_limit():
     assert MAX_WINDOW_MONTHS == 60  # «до пяти лет» по справке Яндекса
+
+
+def test_injected_window_is_validated_before_browser(tmp_path, monkeypatch):
+    """Явно заданное окно валидируется при сборе до обращения к браузеру."""
+    from wordstat_trends.collect_service import CollectService, Config
+
+    svc = CollectService(
+        Config(
+            phrases_file=tmp_path / "p.txt",
+            results_dir=tmp_path / "r",
+            git_dir=tmp_path / "g",
+            dynamics_window=DynamicsWindow(date_from=date(2010, 1, 1), date_to=date(2015, 12, 31)),
+        )
+    )
+    monkeypatch.setattr(CollectService, "_ensure_chrome_alive", lambda self: None)
+    with pytest.raises(WindowRangeError, match="границы истории"):
+        svc._collect(["фраза"])

@@ -128,6 +128,28 @@ def test_series_shorter_than_expected_raises():
     assert excinfo.value.before == (2023, 12)  # points(2019, 1, 60) заканчивается 2023-12
 
 
+def test_stitch_bridging_window_between_two_disjoint_windows():
+    """Окна A и B не пересекаются, но C мостит их: порядок не важен и
+    цепочность не требуется — A/B не должны уронить SeriesGapError до C."""
+    a = points(2024, 1, 10)  # 2024-01 … 2024-10
+    b = points(2025, 8, 10)  # 2025-08 … 2026-05
+    c = points(2024, 8, 15)  # 2024-08 … 2025-10 — мост
+    merged = stitch([a, b, c])
+    assert (merged[0].year, merged[0].month) == (2024, 1)
+    assert (merged[-1].year, merged[-1].month) == (2026, 5)
+    assert len(merged) == 29
+    # И в произвольном порядке подачи.
+    assert stitch([b, c, a]) == merged
+
+
+def test_unreachable_window_still_raises():
+    """Окно, которое ничем не мостится, остаётся дырой в любом порядке."""
+    a = points(2024, 1, 10)
+    far = points(2030, 1, 5)
+    with pytest.raises(SeriesGapError, match="нахлёст"):
+        stitch([a, far])
+
+
 def test_stitch_requires_windows():
     with pytest.raises(SeriesGapError):
         stitch([])

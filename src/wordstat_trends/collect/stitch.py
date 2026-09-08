@@ -143,22 +143,37 @@ def stitch(  # noqa: PLR0912 — линейный конвейер провер�
 ) -> list[MonthlyPoint]:
     """Склеить перекрывающиеся окна в один непрерывный месячный ряд.
 
-    Порядок окон не важен. В зоне нахлёста значения обязаны совпасть
-    (расхождение → ``WindowMismatchError`` с периодом и обоими значениями).
-    Итог обязан быть непрерывным по месяцам (дыра → ``SeriesGapError``);
-    если задан ожидаемый диапазон, ряд обязан покрывать его целиком —
-    «ряд короче ожидаемого» тоже ``SeriesGapError``.
+    Порядок окон не важен и цепочность не требуется: стартуем с окна с самым
+    ранним периодом, дальше на каждом шаге присоединяем окно с максимальным
+    нахлёстом с уже собранным рядом — так окно-«мост» между двумя
+    непересекающимися кусками присоединится до того, как разрыв будет
+    объявлен. Окно, у которого нахлёст с рядом меньше ``min_overlap`` на
+    момент его очереди (в том числе окно, вообще не касающееся ряда),
+    означает дыру → ``SeriesGapError``.
+
+    В зоне нахлёста значения обязаны совпасть (расхождение →
+    ``WindowMismatchError`` с периодом и обоими значениями). Итог обязан быть
+    непрерывным по месяцам (дыра → ``SeriesGapError``); если задан ожидаемый
+    диапазон, ряд обязан покрывать его целиком — «ряд короче ожидаемого»
+    тоже ``SeriesGapError``.
 
     Возвращает точки, отсортированные от старого к новому.
     """
     if not windows:
         raise SeriesGapError(None, None, "не передано ни одного окна")
 
-    ordered = [dict(sorted(_dedupe(w).items())) for w in windows]
-    ordered.sort(key=lambda w: next(iter(w)))
-    merged: dict[Period, MonthlyPoint] = dict(ordered[0])
+    remaining = [dict(sorted(_dedupe(w).items())) for w in windows]
+    remaining.sort(key=lambda w: next(iter(w)))
+    merged: dict[Period, MonthlyPoint] = remaining.pop(0)
 
-    for window in ordered[1:]:
+    while remaining:
+        # Окно-«мост»: максимальный нахлёст с рядом, при равенстве — самое раннее.
+        def _rank(i: int) -> tuple[int, int]:
+            first_period = min(remaining[i])
+            return (len(set(remaining[i]) & set(merged)), -month_key(*first_period))
+
+        best_i = max(range(len(remaining)), key=_rank)
+        window = remaining.pop(best_i)
         overlap = sorted(set(window) & set(merged))
         if len(overlap) < min_overlap:
             edge = max(merged)

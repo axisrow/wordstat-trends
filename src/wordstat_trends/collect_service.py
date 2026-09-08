@@ -141,8 +141,13 @@ class CollectService:
     def _collect(self, phrases: list[str]) -> None:
         self.cfg.results_dir.mkdir(parents=True, exist_ok=True)
         # Осознанный дефолт периода (issue #5): окно задаётся флагами CLI,
-        # а не молчаливым 24-месячным дефолтом интерфейса.
-        window = self.cfg.dynamics_window or default_window()
+        # а не молчаливым 24-месячным дефолтом интерфейса. Валидация рамок —
+        # до обращения к браузеру, в том числе для явно заданного окна.
+        window = self.cfg.dynamics_window
+        if window is None:
+            window = default_window()
+        else:
+            window.validate()
         log.info("окно динамики: %s — %s (%s)", window.date_from, window.date_to, window.granularity)
         for i, phrase in enumerate(phrases):
             self._ensure_chrome_alive()
