@@ -4847,7 +4847,7 @@ wheels = [
 [[package]]
 name = "wordstat"
 version = "0.1.0"
-source = { git = "https://github.com/axisrow/wordstat-cli.git?rev=45512d402cd75e8c30703c2bfdb86cb1a7a059e5#45512d402cd75e8c30703c2bfdb86cb1a7a059e5" }
+source = { git = "https://github.com/axisrow/wordstat-cli.git?rev=aacdd2827f1a2c6c126121773e936386600cb7e2#aacdd2827f1a2c6c126121773e936386600cb7e2" }
 dependencies = [
     { name = "browser-use" },
     { name = "click" },
@@ -4897,7 +4897,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'nlp'", specifier = "==2.13.0" },
     { name = "tsfresh", specifier = "==0.21.2" },
     { name = "tslearn", specifier = "==0.9.0" },
-    { name = "wordstat", git = "https://github.com/axisrow/wordstat-cli.git?rev=45512d402cd75e8c30703c2bfdb86cb1a7a059e5" },
+    { name = "wordstat", git = "https://github.com/axisrow/wordstat-cli.git?rev=aacdd2827f1a2c6c126121773e936386600cb7e2" },
 ]
 provides-extras = ["nlp", "dev"]
 

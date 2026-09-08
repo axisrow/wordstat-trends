@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from wordstat_trends.collect.config import DynamicsWindow, default_window
+
 log = logging.getLogger("wordstat_trends.collect_service")
 
 # Верхняя граница размера запроса и элементов списка: «только POST с явным
@@ -48,6 +50,9 @@ class Config:
     trigger_port: int = 8899
     trigger_max_phrases: int = DEFAULT_MAX_PHRASES
     chrome_pid: int | None = None
+    # Окно динамики (issue #5): пятилетний дефолт вместо платформенных 24 мес.
+    # None → default_window() считается при запуске сбора.
+    dynamics_window: DynamicsWindow | None = None
 
     @classmethod
     def from_env(cls) -> Config:
@@ -135,11 +140,22 @@ class CollectService:
 
     def _collect(self, phrases: list[str]) -> None:
         self.cfg.results_dir.mkdir(parents=True, exist_ok=True)
+        # Осознанный дефолт периода (issue #5): окно задаётся флагами CLI,
+        # а не молчаливым 24-месячным дефолтом интерфейса.
+        window = self.cfg.dynamics_window or default_window()
+        log.info("окно динамики: %s — %s (%s)", window.date_from, window.date_to, window.granularity)
         for i, phrase in enumerate(phrases):
             self._ensure_chrome_alive()
             log.info("сбор фразы <%s>", phrase)
             proc = subprocess.run(  # noqa: S603 — фиксированная команда, не пользовательский ввод
-                ["wordstat", "collect", phrase, "--output-dir", str(self.cfg.results_dir)],
+                [
+                    "wordstat",
+                    "collect",
+                    phrase,
+                    "--output-dir",
+                    str(self.cfg.results_dir),
+                    *window.cli_flags(),
+                ],
                 capture_output=True,
                 text=True,
             )
