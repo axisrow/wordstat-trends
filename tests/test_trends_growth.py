@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wordstat_trends.forecasting.baseline import to_monthly_series
+from wordstat_trends.forecasting.baseline import SP, to_monthly_series
 from wordstat_trends.loader import parse_dynamics_rows
 from wordstat_trends.trends.growth import (
     GROWTH_RATIO_THRESHOLD,
@@ -127,6 +127,24 @@ def test_negative_window_rejected():
     y = _fixture_series("dynamics_seasonal.csv")
     with pytest.raises(ValueError, match="окно скоринга"):
         score_growth(y, window=0)
+
+
+def test_window_eating_season_rejected():
+    # Окно, съедающее train до короче сезона: NaiveForecaster(sp=12) молча
+    # взял бы весь train как «сезонный профиль» — громкий отказ вместо
+    # тихого прогноза не из «12 месяцев назад».
+    y = _fixture_series("dynamics_seasonal.csv")
+    with pytest.raises(ValueError, match="короче сезона"):
+        score_growth(y, window=len(y) - SP + 1)
+    # Максимально допустимое окно (train ровно в один сезон) — валидно.
+    score_growth(y, window=len(y) - SP)
+
+
+def test_nan_values_rejected():
+    y = _fixture_series("dynamics_seasonal.csv").astype(float)
+    y.iloc[5] = float("nan")
+    with pytest.raises(ValueError, match="NaN"):
+        score_growth(y)
 
 
 def test_actual_series_are_floats_and_finite():

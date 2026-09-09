@@ -80,11 +80,26 @@ def score_growth(
 
     if window < 1:
         raise ValueError(f"окно скоринга должно быть >= 1, получено {window}")
+    # После отрезания окна в train обязан остаться полный сезонный цикл:
+    # NaiveForecaster(sp=12) на train короче сезона молча использует весь
+    # train как «сезонный профиль» — прогноз берётся не 12 месяцев назад.
+    if window > len(y) - SP:
+        raise ValueError(
+            f"ряд {phrase!r}: окно {window} оставляет train короче сезона "
+            f"(SP={SP}) — сезонному наиву нужна минимум полная годовая история"
+        )
     if len(y) < MIN_HISTORY:
         raise InsufficientHistoryError(
             f"ряд {phrase!r}: {len(y)} месяцев < MIN_HISTORY={MIN_HISTORY} "
             f"(нужны два полных сезонных цикла)"
         )
+    # to_monthly_series проверяет непрерывность индекса, но не NaN в
+    # значениях: NaN обойдёт проверку forecast_mean <= 0 (NaN-сравнение —
+    # False) и молча даст score=NaN. По духу SeriesContinuityError —
+    # громкий отказ, а не тихое выпадение фразы из детекции.
+    if not y.notna().all():
+        bad = y.index[y.isna()].tolist()
+        raise ValueError(f"ряд {phrase!r}: NaN в значениях ({bad}) — скор не определён")
 
     train, actual = y.iloc[:-window], y.iloc[-window:]
     if forecaster is None:
