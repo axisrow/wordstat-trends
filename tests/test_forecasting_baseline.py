@@ -12,6 +12,7 @@ from wordstat_trends.forecasting.baseline import (
     INITIAL_WINDOW,
     SP,
     TEST_LENGTH,
+    SeriesContinuityError,
     evaluate_forecaster,
     make_expanding_splitter,
     seasonal_naive,
@@ -58,6 +59,21 @@ def test_to_monthly_series_index_and_length(y):
     assert y.index.freqstr == "M"
     assert y.index[0] == pd.Period("2018-01", freq="M")
     assert y.index[-1] == pd.Period("2026-08", freq="M")
+
+
+def test_to_monthly_series_rejects_gap_and_duplicate(y):
+    # Пропуск месяца: sp=12 арифметически привязан к индексу — дыра молча
+    # сдвинула бы сезонный наив на чужой календарный месяц (ревью PR #78).
+    gap = pd.DataFrame({"period": [str(p) for p in y.index if p != pd.Period("2020-06", freq="M")]})
+    gap["queries"] = y.to_numpy()[: len(gap)]
+    with pytest.raises(SeriesContinuityError):
+        to_monthly_series(gap)
+    # Дубль месяца — та же ошибка, тихий сдвиг недопустим.
+    duplicated = pd.DataFrame(
+        {"period": ["2018-01", "2018-01", "2018-02"], "queries": [1, 2, 3], "share_pct": [0.0, 0.0, 0.0]}
+    )
+    with pytest.raises(SeriesContinuityError):
+        to_monthly_series(duplicated)
 
 
 def test_splitter_folds_are_chronological_no_shuffle(y):

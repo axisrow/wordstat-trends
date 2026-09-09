@@ -41,15 +41,30 @@ TEST_LENGTH = 12
 INITIAL_WINDOW = 72
 
 
+class SeriesContinuityError(ValueError):
+    """В ряду есть пропуск или дубль месяца — сезонный sp=12 нельзя доверять."""
+
+
 def to_monthly_series(frame: pd.DataFrame) -> pd.Series:
     """DataFrame загрузчика → месячный ``pd.Series`` с ``PeriodIndex``.
 
     ``load_run`` отдаёт колонки ``period`` (``YYYY-MM``) и ``queries``;
     sktime требует индекс периода — иначе сплиттер примет целочисленную
     ось за позиционную и ``sp=12`` потеряет привязку к календарю.
+
+    Непрерывность обязательна (как и в склейке #6): дыра или дубль месяца
+    молча ломают сезонный наив — ``sp=12`` арифметически привязан к
+    индексу, прогноз возьмётся не за тот календарный месяц. Поэтому здесь
+    ``SeriesGapError``-образная явная ошибка, а не тихий сдвиг.
     """
 
     index = pd.PeriodIndex(frame["period"], freq="M")
+    # is_monotonic_increasing нестрогий — дубль месяца ловится отдельно.
+    if not index.is_full or not index.is_monotonic_increasing or not index.is_unique:
+        raise SeriesContinuityError(
+            f"ряд не является непрерывным месячным (пропуск/дубль месяца): "
+            f"{frame['period'].iloc[0]}..{frame['period'].iloc[-1]}, строк {len(index)}"
+        )
     return pd.Series(frame["queries"].to_numpy(), index=index, name="queries")
 
 
@@ -107,6 +122,7 @@ def evaluate_forecaster(
 __all__ = [
     "INITIAL_WINDOW",
     "SP",
+    "SeriesContinuityError",
     "TEST_LENGTH",
     "evaluate_forecaster",
     "make_expanding_splitter",
