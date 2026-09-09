@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -164,3 +166,131 @@ def test_number_format_matches_wordstat_style():
     # В выгрузке Вордстата 997 977 идёт с неразрывным пробелом — ru сохраняет стиль.
     assert format_number(997977, "ru") == "997 977"
     assert format_number(997977, "zh") == "997,977"
+
+
+# --- данные витрины из артефакта (issue #104) ------------------------------
+
+
+def _artifact_file(tmp_path) -> Path:
+    from tests.test_showcase import _ranked
+    from wordstat_trends.showcase import save_showcase
+
+    return save_showcase(_ranked(), tmp_path / "showcase.json", generated_at=date(2026, 9, 9))
+
+
+@pytest.fixture(scope="module")
+def filled_site(tmp_path_factory) -> dict[str, str]:
+    artifact = _artifact_file(tmp_path_factory.mktemp("artifact"))
+    root = tmp_path_factory.mktemp("site-filled")
+    build_site.build(root, build_date=date(2026, 9, 9), artifact_path=artifact)
+    return {
+        str(p.relative_to(root)): p.read_text(encoding="utf-8")
+        for p in sorted(root.rglob("*.html"))
+    }
+
+
+def test_index_shows_trends_immediately(filled_site):
+    # эпик #1: готовые тренды на первом экране, не пустота вокруг hero
+    assert "Растущие запросы" in filled_site["index.html"]
+    assert "增长的查询" in filled_site["zh/index.html"]
+    assert "синтетический рост" in filled_site["index.html"]
+
+
+def test_index_sections_in_class_order(filled_site):
+    # CLASS_ORDER: рост раньше сезонного, сезонное раньше остального
+    page = filled_site["index.html"]
+    assert page.index("Растущие запросы") < page.index("Сезонное")
+
+
+def test_trends_table_renders_artifact(filled_site):
+    page = filled_site["trends.html"]
+    assert "новогодние подарки" in page
+    assert "Запрос" in page and "Скор" in page
+    assert "Данные от" in page and "9 сентября 2026 г." in page
+    zh = filled_site["zh/trends.html"]
+    assert "数据截至" in zh and "2026年9月9日" in zh
+
+
+def test_trends_table_score_localized(filled_site):
+    # ru: десятичная запятая; zh: точка (i18n-формат чисел, #21 п.6)
+    assert "," in filled_site["trends.html"].split("Скор", 1)[1][:400]
+    zh_tail = filled_site["zh/trends.html"].split("评分", 1)[1][:400]
+    assert re.search(r"\d\.\d", zh_tail)
+
+
+def test_trends_non_growing_score_is_dash(filled_site):
+    # вне «растёт» скора нет — тире, а не 0,00 (объяснимость, #85)
+    assert "<td>—</td>" in filled_site["trends.html"]
+
+
+def test_phrase_html_escaped(tmp_path):
+    # фраза — данные из Вордстата: разрыв разметки через < недопустим
+    evil = tmp_path / "evil.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": "2026-09-09",
+        "phrases": [
+            {"phrase": "<script>alert(1)</script>", "class": "GROWING",
+             "rank": 1, "score": 0.5, "components": None}
+        ],
+    }
+    evil.write_text(json.dumps(entry), encoding="utf-8")
+    root = tmp_path / "site"
+    build_site.build(root, artifact_path=evil)
+    page = (root / "trends.html").read_text(encoding="utf-8")
+    assert "<script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_placeholder_braces_in_data_neutralized(tmp_path):
+    # фраза-данные вида {{ключ}} не должна занимать позицию шаблона:
+    # иначе подставится локализованная строка или сборка упадёт на
+    # неизвестном ключе
+    evil = tmp_path / "braces.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": None,
+        "phrases": [
+            {"phrase": "{{trends.empty.text}}", "class": "GROWING",
+             "rank": 1, "score": 0.5, "components": None}
+        ],
+    }
+    evil.write_text(json.dumps(entry), encoding="utf-8")
+    root = tmp_path / "site"
+    build_site.build(root, artifact_path=evil)
+    page = (root / "trends.html").read_text(encoding="utf-8")
+    assert "Витрина в разработке" not in page
+    assert "{ {trends.empty.text}" in page
+
+
+def test_string_rank_from_corrupted_artifact_does_not_break_markup(tmp_path):
+    # load_artifact типы не валидирует — строковый rank экранируется,
+    # как фраза и класс
+    bad = tmp_path / "rank.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": None,
+        "phrases": [
+            {"phrase": "x", "class": "GROWING",
+             "rank": "<b>1</b>", "score": 0.5, "components": None}
+        ],
+    }
+    bad.write_text(json.dumps(entry), encoding="utf-8")
+    root = tmp_path / "site"
+    build_site.build(root, artifact_path=bad)
+    page = (root / "trends.html").read_text(encoding="utf-8")
+    assert "<b>1</b>" not in page
+    assert "&lt;b&gt;1&lt;/b&gt;" in page
+
+
+def test_bad_artifact_schema_fails_build(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"schema": "nope", "phrases": []}), encoding="utf-8")
+    with pytest.raises(build_site.BuildError, match="не артефакт"):
+        build_site.build(tmp_path / "site", artifact_path=bad)
+
+
+def test_missing_artifact_keeps_empty_state(site_root):
+    # без --artifact сборка не падает и показывает пустое состояние (#21 п.7)
+    page = (site_root / "trends.html").read_text(encoding="utf-8")
+    assert "Данных пока нет" in page

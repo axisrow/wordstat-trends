@@ -71,6 +71,20 @@ def format_share(value: float, locale: Locale | str = Locale.RU) -> str:
     return f"{value:.4f}".replace(".", ",") + " %"
 
 
+def format_ratio(value: float, locale: Locale | str = Locale.RU) -> str:
+    """Дробное число без знака процента: скоры и кратности витрины.
+
+    ru: 2.35 → «2,35» (десятичная запятая, как в выгрузке Вордстата);
+    zh: 2.35 → «2.35». Два десятичных знака: скор витрины читается как
+    «почему фраза в списке», а не измерение.
+    """
+    locale = normalize_locale(str(locale))
+    formatted = f"{value:.2f}"
+    if locale is Locale.ZH:
+        return formatted
+    return formatted.replace(".", ",")
+
+
 def format_month(month: date, locale: Locale | str = Locale.RU) -> str:
     """Месячный период («август 2024» / «2024年8月»)."""
     locale = normalize_locale(str(locale))
