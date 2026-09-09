@@ -322,11 +322,14 @@ def render(template: str, messages: dict[str, str], context: dict[str, str], whe
 
 def build(
     out_dir: Path, build_date: date | None = None, artifact_path: Path | str | None = None
-) -> list[Path]:
-    """Собирает страницы обеих локалей и ассеты; возвращает список страниц.
+) -> tuple[list[Path], dict | None]:
+    """Собирает страницы обеих локалей и ассеты.
 
-    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2); его
-    отсутствие/пустота → пустое состояние (сборка не падает, #21 п.7).
+    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2). Возвращает
+    (страницы, артефакт): артефакт — загруженный JSON или None при
+    отсутствии/пустоте — тогда пустое состояние (сборка не падает, #21 п.7).
+    Вызывающий (main) использует его для итогового сообщения, не
+    перечитывая файл.
     """
     locales = load_locales()
     lint_templates()
@@ -390,21 +393,22 @@ def build(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(page, encoding="utf-8")
             written.append(target)
-    return written
+    return written, artifact
 
 
 def main(argv: list[str]) -> int:
     # argv — как из sys.argv (с именем скрипта), parse_args ждёт аргументы без него
     args = parse_args(argv[1:])
     try:
-        pages = build(args.out_dir, artifact_path=args.artifact)
+        pages, artifact = build(args.out_dir, artifact_path=args.artifact)
     except BuildError as exc:
         print(f"ошибка сборки: {exc}", file=sys.stderr)
         return 1
-    # источник печатается, только когда артефакт реально загружен: дефолтный
-    # путь задан всегда, а файла может не быть — витрина тогда пустая, и
-    # «из site_data/showcase.json» в логе вводило бы в заблуждение
-    source = f" из {args.artifact}" if load_artifact(args.artifact) else ""
+    # источник печатается, только когда артефакт реально загружен (файл есть
+    # и фразы в нём есть): дефолтный путь задан всегда, а файла может не быть —
+    # витрина тогда пустая, и «из site_data/showcase.json» в логе вводило бы
+    # в заблуждение
+    source = f" из {args.artifact}" if artifact else ""
     dirs = ", ".join(sorted(set(p.parent.name or "." for p in pages)))
     print(f"собрано {len(pages)} страниц ({dirs}) → {args.out_dir}/{source}")
     return 0
