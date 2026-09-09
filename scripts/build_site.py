@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from wordstat_trends.i18n import (  # noqa: E402
     DEFAULT_LOCALE,
     format_date,
-    format_ratio,
+    format_score,
 )
 
 TEMPLATES_DIR = SITE_DIR / "templates"
@@ -232,7 +232,7 @@ def render_trends_body(
         phrase = escape_data(p["phrase"])
         klass = html.escape(_class_label(str(p["class"]), messages))
         rank = escape_data(p["rank"])
-        score = format_ratio(float(p["score"]), code) if p.get("components") else "—"
+        score = format_score(float(p["score"]), code) if p.get("components") else "—"
         rows.append(
             f"<tr><td>{rank}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
         )
