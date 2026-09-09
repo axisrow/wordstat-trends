@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="{{html.lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{page.title}}{{meta.title.suffix}}</title>
+  <meta name="description" content="{{meta.description}}">
+  <link rel="canonical" href="{{page.canonical}}">
+  <link rel="stylesheet" href="{{assets}}style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">{{common.skipToContent}}</a>
+  <header class="site-header">
+    <a class="brand" href="{{index.href}}">
+      <span class="brand-name">{{brand.name}}</span>
+      <span class="brand-tagline">{{brand.tagline}}</span>
+    </a>
+    <nav aria-label="{{nav.aria}}">
+      <ul class="nav-list">
+        <li><a href="{{index.href}}" aria-current="{{nav.index.current}}">{{nav.index}}</a></li>
+        <li><a href="{{trends.href}}" aria-current="{{nav.trends.current}}">{{nav.trends}}</a></li>
+        <li><a href="{{about.href}}" aria-current="{{nav.about.current}}">{{nav.about}}</a></li>
+      </ul>
+    </nav>
+    <a class="lang-switch" href="{{alt.href}}" lang="{{alt.lang}}" aria-label="{{lang.switch.aria}}">{{lang.switch}}</a>
+  </header>
+  <main id="main">
+{{content}}
+  </main>
+  <footer class="site-footer">
+    <p>{{footer.built}} {{build.date}}</p>
+    <p><a href="{{repo.href}}">{{footer.issue}}</a> · {{footer.license}}</p>
+  </footer>
+</body>
+</html>
