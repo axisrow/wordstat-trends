@@ -25,11 +25,16 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from wordstat_trends.collect.config import DynamicsWindow, default_window
 from wordstat_trends.cookies_import import CookiesImportError, import_session_from_file
+from wordstat_trends.graph.edges import ExportEdgeProvider
+from wordstat_trends.graph.schedule import GRAPH_MAX_DEPTH, GRAPH_MAX_PHRASES, pick_pending
+from wordstat_trends.graph.state import GraphStateError, GraphStateFile
+from wordstat_trends.graph.traverse import TraversalLimits, TraversalState, run_traversal
 
 log = logging.getLogger("wordstat_trends.collect_service")
 
@@ -56,6 +61,12 @@ class Config:
     # Окно динамики (issue #5): пятилетний дефолт вместо платформенных 24 мес.
     # None → default_window() считается при запуске сбора.
     dynamics_window: DynamicsWindow | None = None
+    # Обход графа запросов (issue #82): расширение словаря от seed-набора по
+    # рёбрам top_related. Выключен по умолчанию: у расширения своя цена
+    # (суточный бюджет фраз поверх seed-прогона), включают осознанно.
+    graph_enabled: bool = False
+    graph_state_file: Path = Path("/app/data/graph_state.json")
+    graph_daily_budget: int = 10
 
     @classmethod
     def from_env(cls) -> Config:
@@ -72,6 +83,9 @@ class Config:
             trigger_port=int(os.environ.get("TRIGGER_PORT", "8899")),
             trigger_max_phrases=int(os.environ.get("TRIGGER_MAX_PHRASES", str(DEFAULT_MAX_PHRASES))),
             chrome_pid=int(pid) if pid and pid.isdigit() else None,
+            graph_enabled=os.environ.get("GRAPH_ENABLED", "").lower() in ("1", "true", "yes"),
+            graph_state_file=Path(os.environ.get("GRAPH_STATE_FILE", "/app/data/graph_state.json")),
+            graph_daily_budget=int(os.environ.get("GRAPH_DAILY_BUDGET", "10")),
         )
 
 
@@ -153,11 +167,22 @@ class CollectService:
             time.sleep(0.01)
         return True
 
-    def _run_locked(self, phrases: list[str]) -> None:
+    def _run_locked(
+        self,
+        phrases: list[str],
+        *,
+        graph_seeds: list[str] | None = None,
+    ) -> None:
+        """Прогон под блокировкой. ``graph_seeds`` задан — после сбора и коммита
+        продвигаем обход графа (#82): только плановые прогоны расширяют
+        словарь, HTTP-запрос с явным списком фраз граф не трогает.
+        """
         assert self._lock.locked()
         self._status = _RunStatus(state="running", started_at=time.time(), phrases=phrases)
         try:
             self._collect(phrases)
+            if graph_seeds is not None:
+                self._graph_advance(graph_seeds)
         except Exception as exc:  # noqa: BLE001 — статус прогона важнее чистоты исключения
             self._status.last_error = f"{type(exc).__name__}: {exc}"
             log.exception("прогон завершился ошибкой")
@@ -313,13 +338,85 @@ class CollectService:
         `with` дал бы второй release() и RuntimeError, убивающий поток
         планировщика после первого же прогона. Блокирующе — плановый прогон
         ждёт завершения запущенного по HTTP, а не конкурирует с ним.
+
+        При включённом обходе графа (#82) к seed-набору добавляются фразы дня
+        из фронтира (в пределах суточного бюджета) — тем же единственным
+        Chrome, в том же прогоне, паузы ``phrase_delay_s`` действуют на все
+        фразы подряд.
         """
         phrases = self._phrases_from_file()
         if phrases is None:
             log.info("список фраз не найден (%s), прогон по расписанию пропущен", self.cfg.phrases_file)
             return
+        extra: list[str] = []
+        if self.cfg.graph_enabled:
+            extra = self._graph_phrases(phrases)
+            if extra:
+                log.info("обход графа: фразы дня из фронтира (бюджет %s): %s",
+                         self.cfg.graph_daily_budget, extra)
         self._lock.acquire()
-        self._run_locked(phrases)
+        self._run_locked(phrases + extra, graph_seeds=phrases if self.cfg.graph_enabled else None)
+
+    # --- обход графа (issue #82) --------------------------------------------------
+
+    def _graph_phrases(self, seeds: list[str], *, today: date | None = None) -> list[str]:
+        """Фразы дня из фронтира обхода: приоритет + суточный бюджет.
+
+        Бюджет списывается при планировании и сразу персистится: перезапуск
+        контейнера среди дня не восстанавливает уже потраченный лимит (фраза
+        могла быть собрана до падения). Ошибка чтения состояния не роняет
+        seed-прогон — расширение пропускается, причина в логе и статусе.
+        """
+        store = GraphStateFile(self.cfg.graph_state_file)
+        try:
+            state, budget = store.load()
+        except GraphStateError as exc:
+            self._status.last_error = f"GraphStateError: {exc}"
+            log.error("расширение пропущено: %s", exc)
+            return []
+        state = state if state is not None else TraversalState()
+        iso_day = (today or date.today()).isoformat()
+        if budget is None or budget["date"] != iso_day:
+            budget = {"date": iso_day, "spent": 0}
+        left = self.cfg.graph_daily_budget - budget["spent"]
+        picked = pick_pending(state, left, exclude=set(seeds))
+        if picked:
+            budget["spent"] += len(picked)
+            store.save(state, budget)
+        return picked
+
+    def _graph_advance(self, seeds: list[str]) -> None:
+        """Продвинуть обход после прогона: раскрыть собранные фразы, сохранить.
+
+        Ядро само оставляет фразы без экспорта во фронтире
+        (``EdgesNotAvailable``) — их подберёт бюджет следующего дня, включая
+        несобранный сегодня seed. Ошибка — состояние не трогаем: прогресс
+        прошлого дня уже на диске, расширение повторится завтра.
+        """
+        try:
+            provider = ExportEdgeProvider(self.cfg.results_dir / "runs")
+            store = GraphStateFile(self.cfg.graph_state_file)
+            state, budget = store.load()
+            state = state if state is not None else TraversalState()
+            budget = budget if budget is not None else {"date": date.today().isoformat(), "spent": 0}
+            result = run_traversal(
+                seeds,
+                provider,
+                TraversalLimits(max_phrases=GRAPH_MAX_PHRASES, max_depth=GRAPH_MAX_DEPTH),
+                state,
+            )
+            store.save(result.state, budget)
+            log.info(
+                "обход графа: словарь %d фраз, фронтир %d, новых раскрытий %d%s%s",
+                len(result.state.visited),
+                len(result.state.frontier),
+                result.provider_calls,
+                ", обрезан по фразам" if result.truncated_by_phrases else "",
+                ", обрезан по глубине" if result.truncated_by_depth else "",
+            )
+        except Exception as exc:  # noqa: BLE001 — seed-сбор уже закоммичен, расширение не критично
+            self._status.last_error = f"{type(exc).__name__}: {exc}"
+            log.exception("продвижение обхода не удалось — состояние не изменено")
 
     def _phrases_from_file(self) -> list[str] | None:
         try:

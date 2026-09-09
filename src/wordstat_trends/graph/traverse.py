@@ -54,13 +54,23 @@ class EdgeProvider(Protocol):
     """Источник рёбер графа: фраза → соседи с частотностями.
 
     Единственная точка контакта ядра с внешним миром. Реальная реализация
-    (чтение ``top_related`` из прогонов сбора) появится в #82 после
-    исправления wordstat-cli#62; тесты работают синтетическими графами.
+    (чтение ``top_related`` из прогонов сбора) — #82. Пустой список —
+    легальный ответ (тупик); «данных ещё нет» — ``EdgesNotAvailable``
+    (фраза остаётся во фронтире, а не становится тупиком).
     """
 
     def neighbors(self, phrase: str) -> list[RelatedPhrase]:
         """Вернуть соседей фразы. Пустой список — легальный ответ (тупик)."""
         ...
+
+
+class EdgesNotAvailable(Exception):
+    """Рёбер для фразы пока нет: экспорт не собран (интеграция со сбором, #82).
+
+    Ядро отвечает на это сохранением кандидата во фронтире: фраза не
+    попадает в ``visited`` и дождётся сбора, вместо того чтобы навсегда
+    стать «раскрытым тупиком».
+    """
 
 
 @dataclass(frozen=True)
@@ -199,8 +209,16 @@ def run_traversal(
             continue
 
         state.visited[entry.phrase] = entry.depth
+        try:
+            neighbors = provider.neighbors(entry.phrase)
+        except EdgesNotAvailable:
+            # Данных для раскрытия ещё нет (#82): кандидат возвращается во
+            # фронтир и не считается ни раскрытым, ни тупиком.
+            del state.visited[entry.phrase]
+            state.frontier.append(entry)
+            continue
         provider_calls += 1
-        for neighbor in provider.neighbors(entry.phrase):
+        for neighbor in neighbors:
             if neighbor.phrase == entry.phrase:
                 continue  # петля на самого себя — не ребро
             if neighbor.phrase in state.visited:

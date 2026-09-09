@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from wordstat_trends.graph import RelatedPhrase, TraversalLimits, run_traversal
+from wordstat_trends.graph import EdgesNotAvailable, RelatedPhrase, TraversalLimits, run_traversal
 
 
 class DictProvider:
@@ -244,3 +244,46 @@ class TestProviderContract:
         provider = DictProvider({"m": [("z", 1), ("a", 2)], "z": [], "a": []})
         result = run_traversal(["m"], provider, TraversalLimits(max_phrases=10, max_depth=1))
         assert result.phrases == ["a", "m", "z"]
+
+
+class UnavailableProvider(DictProvider):
+    """Провайдер интеграции (#82): фразы без экспорта поднимают ошибку."""
+
+    def neighbors(self, phrase: str) -> list[RelatedPhrase]:
+        if phrase not in self.edges:
+            raise EdgesNotAvailable(phrase)
+        return super().neighbors(phrase)
+
+
+class TestEdgesNotAvailable:
+    def test_unavailable_phrase_stays_in_frontier(self):
+        # «b» и «c» найдены из «a», но их экспортов ещё нет: они ждут во
+        # фронтире, а не становятся посещёнными тупиками
+        provider = UnavailableProvider({"a": [("b", 10), ("c", 9)], "z": []})
+        result = run_traversal(["a"], provider, TraversalLimits(max_phrases=10, max_depth=3))
+
+        assert result.phrases == ["a"]
+        assert sorted(e.phrase for e in result.state.frontier) == ["b", "c"]
+
+    def test_unavailable_phrase_not_counted_as_provider_expansion(self):
+        provider = UnavailableProvider({"a": [("b", 1)]})
+        first = run_traversal(["a"], provider, TraversalLimits(max_phrases=10, max_depth=3))
+
+        # экспорт «b» появился — второй прогон подбирает её из фронтира
+        provider.edges["b"] = []
+        second = run_traversal(["b"], provider, TraversalLimits(max_phrases=10, max_depth=3), first.state)
+
+        assert first.provider_calls == 1  # попытка без данных не считается раскрытием
+        assert second.provider_calls == 1
+        assert sorted(second.phrases) == ["a", "b"]
+
+    def test_available_after_collection(self):
+        # итерация 1: «b» без экспорта; итерация 2: экспорт появился
+        provider = UnavailableProvider({"a": [("b", 10)]})
+        first = run_traversal(["a"], provider, TraversalLimits(max_phrases=10, max_depth=3))
+        provider.edges["b"] = [("c", 1)]
+
+        second = run_traversal([], provider, TraversalLimits(max_phrases=10, max_depth=3), first.state)
+
+        assert sorted(second.phrases) == ["a", "b"]
+        assert "c" in {e.phrase for e in second.state.frontier}
