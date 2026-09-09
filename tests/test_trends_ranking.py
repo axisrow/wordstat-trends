@@ -227,6 +227,20 @@ def test_tie_break_by_phrase():
     assert showcase[0].score == showcase[1].score
 
 
+def test_volume_uses_base_level_not_growth_window():
+    # Объём — базовый уровень (train до окна скоринга), а не окно: окно
+    # растущей фразы включает сам рост, и объём по окну коррелировал бы с
+    # аномальностью. Одинаковая база при разной силе роста → одинаковый объём.
+    weak = _record(_scaled(_growing_series(multiplier=1.6), 1.0, 1.0), "слабый рост")
+    strong = _record(_scaled(_growing_series(multiplier=3.0), 1.0, 1.0), "сильный рост")
+    rows = {row.phrase: row for row in rank_showcase([weak, strong])}
+    weak_c = rows["слабый рост"].components
+    strong_c = rows["сильный рост"].components
+    assert weak_c is not None and strong_c is not None
+    assert weak_c.volume == pytest.approx(strong_c.volume)
+    assert strong_c.anomaly > weak_c.anomaly
+
+
 def test_weights_sum_to_one():
     # Веса — явные константы, в сумме единица (скор остаётся в [0, 1]).
     assert ANOMALY_WEIGHT + VOLUME_WEIGHT + FRESHNESS_WEIGHT == pytest.approx(1.0)

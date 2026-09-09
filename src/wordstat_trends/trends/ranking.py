@@ -136,14 +136,16 @@ def phrase_record(
     )
 
 
-def phrase_record_from_frame(frame: pd.DataFrame, phrase: str | None = None) -> PhraseRecord:
+def phrase_record_from_frame(
+    frame: pd.DataFrame, phrase: str | None = None, filtered_out: bool = False
+) -> PhraseRecord:
     """DataFrame загрузчика (``period``/``queries``) → запись ранжирования."""
 
     resolved = frame.attrs.get("phrase") if phrase is None else phrase
     resolved = resolved if resolved is not None else ""
     y = to_monthly_series(frame)
     return PhraseRecord(
-        phrase=resolved, series=y, growth=score_growth(y, phrase=resolved)
+        phrase=resolved, series=y, growth=score_growth(y, phrase=resolved), filtered_out=filtered_out
     )
 
 
@@ -202,7 +204,13 @@ def growth_score_components(record: PhraseRecord) -> ScoreComponents:
     """Компоненты скора роста. Нормировка относительно самой фразы."""
 
     anomaly = 1.0 - 1.0 / record.growth.score
-    mean_volume = float(record.growth.actual.mean())
+    # Объём — базовый уровень ряда (обучающая история до окна скоринга),
+    # а не среднее окна: окно растущей фразы уже включает сам рост, и объём
+    # по окну конфликат с аномальностью — две фразы с одинаковой базовой
+    # частотностью, но разной силой роста получали бы разные volume
+    # (корреляция компонент).
+    base = record.series.iloc[: -len(record.growth.actual)]
+    mean_volume = float(base.astype(float).mean())
     volume = min(math.log10(1.0 + mean_volume) / math.log10(1.0 + VOLUME_TOP), 1.0)
     age = growth_age_months(record.series)
     if age is None:
