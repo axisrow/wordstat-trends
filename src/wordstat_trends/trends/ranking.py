@@ -149,6 +149,19 @@ def phrase_record_from_frame(
     )
 
 
+def monthly_profile(y: pd.Series) -> pd.Series:
+    """Месячный профиль: средние по календарным месяцам за всю историю.
+
+    Усреднение по годам (после MIN_HISTORY=24 каждый месяц пройден
+    минимум дважды) сглаживает разовые всплески — остаётся устойчивая
+    сезонная компонента. Индекс результата — номер месяца 1..12.
+    Потребители: амплитуда сезонности здесь (#85), месяц пика закупки
+    (``wordstat_trends.sourcing.timing``, #114).
+    """
+
+    return y.groupby(pd.PeriodIndex(y.index).month).mean().astype(float)
+
+
 def seasonal_max_min_ratio(y: pd.Series) -> float:
     """Амплитуда месячного профиля: max / min средних по месяцам года.
 
@@ -157,7 +170,7 @@ def seasonal_max_min_ratio(y: pd.Series) -> float:
     остаётся устойчивая сезонная компонента.
     """
 
-    month_means = y.groupby(pd.PeriodIndex(y.index).month).mean().astype(float)
+    month_means = monthly_profile(y)
     lo = float(month_means.min())
     if lo <= 0:
         # Нулевой месяц в профиле делит амплитуду на ноль; такой ряд
@@ -276,6 +289,7 @@ __all__ = [
     "classify",
     "growth_age_months",
     "growth_score_components",
+    "monthly_profile",
     "phrase_record",
     "phrase_record_from_frame",
     "rank_showcase",
