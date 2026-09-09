@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +95,17 @@ def test_missing_key_raises(tmp_path):
     ranked, growth = _showcase_with_growth()["растущая синтетика"]
     with pytest.raises(ExplainError, match="explain.growing"):
         explain_phrase(ranked, growth, "ru", messages={})
+
+
+def test_missing_placeholder_raises_explain_error():
+    # Ревью PR #108: GROWING с components=None (допускается guard-ом) —
+    # плейсхолдер {months} без значения обязан дать ExplainError,
+    # а не сырой KeyError из str.format.
+    ranked, growth = _showcase_with_growth()["растущая синтетика"]
+    stripped = replace(ranked, components=None)
+    messages = {"explain.growing": "рост к прогнозу в {ratio} раза, рост идёт {months} мес."}
+    with pytest.raises(ExplainError, match="months"):
+        explain_phrase(stripped, growth, "ru", messages=messages)
 
 
 def test_format_ratio_locale_separators_on_real_scores():

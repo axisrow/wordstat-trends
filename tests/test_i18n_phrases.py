@@ -102,6 +102,21 @@ def test_service_error_is_not_fatal(capsys):
     assert "сборка продолжает на кэше" in capsys.readouterr().err
 
 
+def test_length_mismatch_is_not_fatal(capsys):
+    # Ревью PR #108: несовпадение числа переводов — тоже ошибка сервиса,
+    # контракт «сборка не падает» распространяется и на неё.
+    cache = TranslationCache()
+
+    def short_fetch(phrases, key):
+        return ["один перевод"]
+
+    translated, report = translate_phrases(
+        ["фраза 1", "фраза 2"], cache, api_key="k", fetch=short_fetch
+    )
+    assert report.untranslated == ["фраза 1", "фраза 2"]
+    assert "сборка продолжает на кэше" in capsys.readouterr().err
+
+
 def test_duplicate_phrases_deduplicated():
     cache = TranslationCache()
     translated, report = translate_phrases(
@@ -116,3 +131,9 @@ def test_display_phrase_shows_original_next_to_translation():
     assert display_phrase(translated, "zh") == "新年礼物（новогодние подарки）"
     assert display_phrase(translated, "ru") == "новогодние подарки"
     assert display_phrase(TranslatedPhrase("фраза", None), "zh") == "фраза"
+
+
+def test_display_phrase_normalizes_locale_tag():
+    # Ревью PR #108: «zh-CN» — та же локаль zh, перевод не теряется.
+    translated = TranslatedPhrase("новогодние подарки", "新年礼物")
+    assert display_phrase(translated, "zh-CN") == "新年礼物（новогодние подарки）"

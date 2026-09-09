@@ -34,6 +34,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from wordstat_trends.i18n import Locale, normalize_locale
+
 #: Кэш-источник истины по умолчанию (issue #20: переводы версионируются
 #: в репозитории, иначе сайт невоспроизводим, а сборка зависит от сети).
 DEFAULT_CACHE_PATH = (
@@ -142,10 +144,13 @@ def google_translate_fetch(
     """
 
     params = urllib.parse.urlencode(
-        [("q", p) for p in phrases] + [("source", source), ("target", target),
-                                       ("format", "text"), ("key", api_key)]
+        [("q", p) for p in phrases] + [("source", source), ("target", target), ("format", "text")]
     )
-    request = urllib.request.Request(f"{_ENDPOINT}?{params}")
+    # Ключ — заголовком, не query string: URL с ключом оседает в логах
+    # прокси и раннеров (заметка ревью PR #108).
+    request = urllib.request.Request(
+        f"{_ENDPOINT}?{params}", headers={"x-goog-api-key": api_key}
+    )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -197,13 +202,15 @@ def translate_phrases(
             batch = missing[start : start + _BATCH_SIZE]
             try:
                 batch_translated = fetch(batch, api_key)
+                if len(batch_translated) != len(batch):
+                    raise TranslationServiceError(
+                        f"сервис вернул {len(batch_translated)} переводов на {len(batch)} фраз"
+                    )
             except TranslationServiceError as exc:
+                # Любая ошибка сервиса — не фатальна: сеть способ пополнения,
+                # а не обязательство (контракт issue #20, заметка ревью #108).
                 print(f"i18n: {exc} — сборка продолжает на кэше", file=sys.stderr)
                 break
-            if len(batch_translated) != len(batch):
-                raise TranslationServiceError(
-                    f"сервис вернул {len(batch_translated)} переводов на {len(batch)} фраз"
-                )
             cache.update(dict(zip(batch, batch_translated)))
             results.update(dict(zip(batch, batch_translated)))
             translated_now += len(batch_translated)
@@ -237,7 +244,7 @@ def display_phrase(item: TranslatedPhrase, locale: str) -> str:
     любой локали показывается оригиналом.
     """
 
-    if locale != "zh" or item.translation is None:
+    if normalize_locale(str(locale)) is not Locale.ZH or item.translation is None:
         return item.phrase
     return f"{item.translation}（{item.phrase}）"
 

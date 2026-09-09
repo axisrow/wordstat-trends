@@ -62,7 +62,14 @@ def load_messages(locale: Locale | str, locales_dir: Path = LOCALES_DIR) -> dict
 def _render(messages: dict[str, str], key: str, params: dict[str, str]) -> str:
     if key not in messages:
         raise ExplainError(f"нет ключа {key!r} в локали — проверьте site/locales/*.json")
-    return messages[key].format(**params)
+    try:
+        return messages[key].format(**params)
+    except KeyError as exc:
+        # Плейсхолдер шаблона без значения (например {months} при
+        # components=None) — ошибка контракта, а не сырой KeyError.
+        raise ExplainError(
+            f"ключ {key!r}: плейсхолдер {exc} не получил значения"
+        ) from exc
 
 
 def explain_phrase(
