@@ -168,6 +168,18 @@ def _class_label(klass: str, messages: dict[str, str]) -> str:
     return messages[key]
 
 
+def escape_data(value: object) -> str:
+    """Данные артефакта → текстовый узел HTML.
+
+    ``html.escape`` гасит разметку, но не трогает фигурные скобки: фраза
+    вида ``{{trends.empty.text}}`` иначе попала бы в позицию шаблона и
+    подставилась локализованной строкой (или уронила сборку на неизвестном
+    ключе) — поэтому ``{{`` нейтрализуется сразу.
+    """
+
+    return html.escape(str(value)).replace("{{", "{ {")
+
+
 def render_index_sections(artifact: dict) -> str:
     """Секции классов для главной: тренды на первом экране (эпик #1).
 
@@ -183,7 +195,7 @@ def render_index_sections(artifact: dict) -> str:
         if not rows:
             continue
         items = "".join(
-            f"<li>{html.escape(str(p['phrase']))}</li>" for p in rows
+            f"<li>{escape_data(p['phrase'])}</li>" for p in rows
         )
         sections.append(
             f'<section class="trend-section">\n'
@@ -217,11 +229,12 @@ def render_trends_body(
     rows = []
     phrases = artifact["phrases"]
     for p in phrases:
-        phrase = html.escape(str(p["phrase"]))
+        phrase = escape_data(p["phrase"])
         klass = html.escape(_class_label(str(p["class"]), messages))
+        rank = escape_data(p["rank"])
         score = format_ratio(float(p["score"]), code) if p.get("components") else "—"
         rows.append(
-            f"<tr><td>{p['rank']}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
+            f"<tr><td>{rank}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
         )
     body = "\n".join(rows)
     return (

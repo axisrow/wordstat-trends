@@ -242,6 +242,47 @@ def test_phrase_html_escaped(tmp_path):
     assert "&lt;script&gt;" in page
 
 
+def test_placeholder_braces_in_data_neutralized(tmp_path):
+    # фраза-данные вида {{ключ}} не должна занимать позицию шаблона:
+    # иначе подставится локализованная строка или сборка упадёт на
+    # неизвестном ключе
+    evil = tmp_path / "braces.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": None,
+        "phrases": [
+            {"phrase": "{{trends.empty.text}}", "class": "GROWING",
+             "rank": 1, "score": 0.5, "components": None}
+        ],
+    }
+    evil.write_text(json.dumps(entry), encoding="utf-8")
+    root = tmp_path / "site"
+    build_site.build(root, artifact_path=evil)
+    page = (root / "trends.html").read_text(encoding="utf-8")
+    assert "Витрина в разработке" not in page
+    assert "{ {trends.empty.text}" in page
+
+
+def test_string_rank_from_corrupted_artifact_does_not_break_markup(tmp_path):
+    # load_artifact типы не валидирует — строковый rank экранируется,
+    # как фраза и класс
+    bad = tmp_path / "rank.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": None,
+        "phrases": [
+            {"phrase": "x", "class": "GROWING",
+             "rank": "<b>1</b>", "score": 0.5, "components": None}
+        ],
+    }
+    bad.write_text(json.dumps(entry), encoding="utf-8")
+    root = tmp_path / "site"
+    build_site.build(root, artifact_path=bad)
+    page = (root / "trends.html").read_text(encoding="utf-8")
+    assert "<b>1</b>" not in page
+    assert "&lt;b&gt;1&lt;/b&gt;" in page
+
+
 def test_bad_artifact_schema_fails_build(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps({"schema": "nope", "phrases": []}), encoding="utf-8")
