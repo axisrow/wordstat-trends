@@ -125,6 +125,23 @@ def test_summarize_backtest_empty_table_fails_loudly():
         summarize_backtest(pd.DataFrame(columns=TABLE_COLUMNS))
 
 
+def test_summarize_backtest_phrase_without_baseline_fails_loudly():
+    # Таблица, собранная не run_backtest, может не иметь строки бейзлайна у
+    # какой-то фразы — доля побед не определена, и это громкая ошибка,
+    # а не тихий NaN в win_rate.
+    table = pd.DataFrame(
+        [
+            {"phrase": "ф1", "model": BASELINE_MODEL, "mase_median": 0.8, "n_folds": 2},
+            {"phrase": "ф1", "model": "theta", "mase_median": 0.6, "n_folds": 2},
+            # у «ф2» бейзлайна нет
+            {"phrase": "ф2", "model": "theta", "mase_median": 0.7, "n_folds": 2},
+        ],
+        columns=TABLE_COLUMNS,
+    )
+    with pytest.raises(BacktestError, match="ф2"):
+        summarize_backtest(table)
+
+
 def test_write_backtest_report_csv_roundtrip(series_by_phrase, tmp_path):
     # CSV пишется и читается назад без потерь: формат стабилен между
     # прогонами, кодировка utf-8-sig — как выгрузки Вордстата (docs/DATA.md).

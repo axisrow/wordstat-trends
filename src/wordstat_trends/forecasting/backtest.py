@@ -105,6 +105,12 @@ def summarize_backtest(table: pd.DataFrame) -> pd.DataFrame:
     baseline = table[table["model"] == BASELINE_MODEL].set_index("phrase")["mase_median"]
     if baseline.empty:
         raise BacktestError(f"в таблице нет строк бейзлайна {BASELINE_MODEL!r} — доля побед не определена")
+    # Каждая фраза таблицы обязана иметь строку бейзлайна: без неё доля побед
+    # не определена, и тихий NaN скрыл бы кривую таблицу (собранную не
+    # run_backtest). Поэтому проверка — громкая, а не NaN в результате.
+    orphaned = sorted(set(table["phrase"]) - set(baseline.index))
+    if orphaned:
+        raise BacktestError(f"фразы без строки бейзлайна {BASELINE_MODEL!r}: {orphaned}")
 
     rows: list[dict] = []
     for model in MODEL_FACTORIES:
@@ -114,14 +120,12 @@ def summarize_backtest(table: pd.DataFrame) -> pd.DataFrame:
         wins = sum(
             float(row.mase_median) < float(baseline.loc[row.phrase])  # type: ignore[arg-type]
             for row in part.itertuples()
-            if row.phrase in baseline.index
         )
-        compared = int(part["phrase"].isin(baseline.index).sum())
         rows.append(
             {
                 "model": model,
                 "mase_median": float(part["mase_median"].median()),  # type: ignore[arg-type]
-                "win_rate_vs_baseline": wins / compared if compared else float("nan"),
+                "win_rate_vs_baseline": wins / len(part),
                 "n_phrases": int(len(part)),
             }
         )
