@@ -16,13 +16,18 @@ dependencies = [
     "tslearn==0.9.0",
     "scikit-learn==1.7.2",
     "pandas==2.3.3",
+    # Лемматизация — базовый этап NLP-конвейера (нужен и TF-IDF, и эмбеддингам),
+    # а не тяжёлая ML-зависимость: ~5 МБ, чистый Python + DAWG-словарь. Живёт
+    # в основных зависимостях, чтобы тесты шли в CI без extra `nlp` (torch ~2 ГБ).
+    "pymorphy3==2.0.6",
 ]
 
 [project.optional-dependencies]
+# pymorphy3 перенесён в основные зависимости (см. комментарий выше): лишней
+# тяжести в extra не осталось, `uv sync --extra nlp` ставит только модельные пакеты.
 nlp = [
     "sentence-transformers==6.0.0",
     "torch==2.13.0",
-    "pymorphy3==2.0.6",
 ]
 dev = [
     "pytest==9.1.1",
