@@ -7,7 +7,10 @@ requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git@aacdd2827f1a2c6c126121773e936386600cb7e2",
+    # d56e031 = PR #63: клик по кнопке CSV-меню — полные экспорты top_popular
+    # и top_related (баг пустых рёбер #62). Рёбра графа обхода (#82) опираются
+    # на этот фикс; на aacdd28 top_related всегда пуст.
+    "wordstat @ git+https://github.com/axisrow/wordstat-cli.git@d56e031d0da6ce6918d45510da85f86c5a4bcd30",
     "sktime==1.1.0",
     "statsmodels==0.14.6",
     "statsforecast==2.0.1",
