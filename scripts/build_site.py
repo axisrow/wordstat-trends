@@ -4,7 +4,7 @@
 живёт в site/locales/*.json и подставляется в шаблоны через {{ключ}}.
 
 Данные витрины (issue #104) — JSON-артефакт ранжирования (схема
-``showcase/v1``, пишется ядром ``wordstat_trends.showcase``). Сборка читает
+``showcase/v2``, пишется ядром ``wordstat_trends.showcase``). Сборка читает
 его сама (json, не пакет: артефакт пишется в CI без зависимостей проекта);
 отсутствие или пустота артефакта — пустое состояние, не ошибка (#21 п.7).
 
@@ -50,7 +50,7 @@ ASSETS_DIR = SITE_DIR / "assets"
 #: Схема артефакта (см. wordstat_trends.showcase.SCHEMA); строкой, а не
 #: импортом: showcase тянет pandas через trends.ranking, а сборка сайта
 #: обязана идти на голом stdlib (CI без зависимостей проекта).
-SHOWCASE_SCHEMA = "showcase/v1"
+SHOWCASE_SCHEMA = "showcase/v2"
 
 #: Сколько фраз каждой секции показывать на главной: тренды — сразу
 #: (эпик #1), без прокрутки простыня всех классов; полная таблица — на
@@ -204,6 +204,42 @@ def render_index_sections(artifact: dict) -> str:
     return "\n".join(sections)
 
 
+def render_niche_section(artifact: dict) -> str:
+    """Секция ниш для главной: темы, а не отдельные фразы (эпик #14).
+
+    Ниши приходят из артефакта (посчитаны ядром, docs/TRENDS.md): метка-тема
+    и класс — данные (экранируются; класс — ключом локали), топ-фразы состава —
+    ссылки на строки таблицы трендов (якоря ``#phrase-N``).
+    """
+
+    niches = artifact.get("niches") or []
+    if not niches:
+        return ""
+    items: list[str] = []
+    for niche in niches:
+        key = SECTION_KEYS.get(str(niche["class"]))
+        if key is None:
+            raise BuildError(f"неизвестный класс ниши в артефакте: {niche['class']!r}")
+        phrases = "".join(
+            f'<li><a href="{{{{trends.href}}}}#phrase-{html.escape(str(entry["rank"]), quote=True)}">'
+            f"{escape_data(entry['phrase'])}</a></li>"
+            for entry in niche["phrases"]
+        )
+        items.append(
+            f'<li class="niche">\n'
+            f'<h3 class="niche-topic">{escape_data(niche["topic"])}</h3>\n'
+            f'<p class="niche-class">{{{{{key}}}}}</p>\n'
+            f'<ul class="niche-phrases">\n{phrases}\n</ul>\n'
+            f"</li>"
+        )
+    return (
+        f'<section class="niche-section">\n'
+        f"<h2>{{{{niches.title}}}}</h2>\n"
+        f'<ul class="niche-list">\n{"".join(items)}\n</ul>\n'
+        f"</section>"
+    )
+
+
 def render_trends_body(
     artifact: dict | None, messages: dict[str, str], code: str
 ) -> str:
@@ -234,7 +270,8 @@ def render_trends_body(
         rank = escape_data(p["rank"])
         score = format_score(float(p["score"]), code) if p.get("components") else "—"
         rows.append(
-            f"<tr><td>{rank}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
+            f'<tr id="phrase-{html.escape(str(p["rank"]), quote=True)}">'
+            f"<td>{rank}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
         )
     body = "\n".join(rows)
     return (
@@ -274,7 +311,7 @@ def build(
 ) -> list[Path]:
     """Собирает страницы обеих локалей и ассеты; возвращает список страниц.
 
-    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v1); его
+    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2); его
     отсутствие/пустота → пустое состояние (сборка не падает, #21 п.7).
     """
     locales = load_locales()
@@ -318,7 +355,7 @@ def build(
             if name == "index":
                 context["index.sections"] = (
                     render(
-                        render_index_sections(artifact),
+                        render_index_sections(artifact) + "\n" + render_niche_section(artifact),
                         messages,
                         context,
                         f"{code}/index.sections",
@@ -365,7 +402,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--artifact",
         type=Path,
         default=None,
-        help="JSON-артефакт витрины (showcase/v1); без него — пустое состояние",
+        help="JSON-артефакт витрины (showcase/v2); без него — пустое состояние",
     )
     return parser.parse_args(argv)
 

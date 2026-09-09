@@ -6,12 +6,12 @@
 зависимостей проекта) не может их прочитать, поэтому ядро сериализует
 витрину в JSON-артефакт, который ``scripts/build_site.py`` кладёт в шаблоны.
 
-Артефакт (``showcase/v1``):
+Артефакт (``showcase/v2``):
 
 .. code-block:: json
 
     {
-      "schema": "showcase/v1",
+      "schema": "showcase/v2",
       "generated_at": "2026-09-09",
       "phrases": [
         {"phrase": "...", "class": "GROWING", "rank": 1,
@@ -25,31 +25,133 @@
 русская отображаемая строка: витрина переводит класс ключом локали).
 ``components`` — ``None`` вне класса «растёт» (как в :class:`RankedPhrase`).
 Ряд истории и окно скоринга в артефакт не входят — это #105.
+
+Ниши (issue #106, формулы предрегистрированы в docs/TRENDS.md): ниша =
+кластер `Cluster` + доминирующий класс состава + агрегированный скор.
+Считаются ядром на основном BERTA-конвейере и фиксируются в артефакте —
+сборка сайта в Actions не касается extra `nlp` (выбор зафиксирован в
+issue-комментарии #106). Продакшн-пути, который прогоняет кластеризацию
+и пишет непустые ``niches`` (CLI/пайплайн сбора), в репо пока нет —
+встраывание в конвейер артефакта относится к эпику #14; сейчас артефакт
+с ``niches`` получается только прямыми вызовами (тесты). ``niches`` — всегда список (может быть пустым:
+кластеризация не нашла ни одной фразы с лексическими токенами).
+
+Артефакт дополняется секцией (schema ``showcase/v2``):
+
+.. code-block:: json
+
+    {
+      "schema": "showcase/v2",
+      "niches": [
+        {"topic": "...", "class": "GROWING", "score": 0.55,
+         "phrases": [{"phrase": "...", "rank": 1}]}
+      ]
+    }
 """
 
 from __future__ import annotations
 
 import json
+import statistics
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from wordstat_trends.trends.ranking import RankedPhrase
+from wordstat_trends.nlp.clustering import ClusteringResult
+from wordstat_trends.trends.ranking import CLASS_ORDER, RankedPhrase, TrendClass
 
-SCHEMA = "showcase/v1"
+SCHEMA = "showcase/v2"
+
+#: Сколько фраз состава ниши показывать на витрине (ссылки на карточки).
+NICHE_TOP_PHRASES = 5
 
 
 class ShowcaseError(ValueError):
     """Артефакт витрины не читается: не та схема или битая структура."""
 
 
-def serialize_showcase(
-    ranked: list[RankedPhrase], generated_at: date | None = None
-) -> dict:
-    """Отранжированная витрина → JSON-совместимый словарь артефакта."""
+@dataclass(frozen=True)
+class Niche:
+    """Ниша витрины: кластер + доминирующий класс + агрегированный скор.
 
+    Формулы предрегистрированы в docs/TRENDS.md: доминирующий класс — мода
+    классов состава (тай-брейк — CLASS_ORDER), скор — медиана скоров фраз
+    доминирующего класса. ``members`` — фразы состава в порядке витрины.
+    """
+
+    top_lemmas: list[str]
+    klass: TrendClass
+    score: float
+    members: list[RankedPhrase]
+
+    @property
+    def topic(self) -> str:
+        """Метка-тема ниши: топ-леммы кластера через запятую."""
+        return ", ".join(self.top_lemmas)
+
+
+def build_niches(ranked: list[RankedPhrase], result: ClusteringResult) -> list[Niche]:
+    """Связка кластеров с классами трендов: кластеры + ранги → ниши.
+
+    Кластеризируются все фразы сразу (см. docs/TRENDS.md); фразы кластера
+    отображаются обратно на строки витрины — состав ниши упорядочен по
+    рангу (интересные фразы сверху). Итог отсортирован: CLASS_ORDER, затем
+    скор убыванием, затем метка-тема (детерминированность).
+    """
+
+    by_phrase = {row.phrase: row for row in ranked}
+    niches: list[Niche] = []
+    for cluster in result.clusters:
+        members = sorted(
+            (by_phrase[phrase] for phrase in cluster.phrases if phrase in by_phrase),
+            key=lambda row: row.rank,
+        )
+        if not members:
+            continue
+        # доминирующий класс: максимум частоты; тай-брейк — CLASS_ORDER
+        counts = {klass: 0 for klass in CLASS_ORDER}
+        for row in members:
+            counts[row.klass] += 1
+        dominant = min(CLASS_ORDER, key=lambda klass: (-counts[klass], CLASS_ORDER.index(klass)))
+        dominant_scores = [row.score for row in members if row.klass is dominant]
+        niches.append(
+            Niche(
+                top_lemmas=cluster.top_lemmas,
+                klass=dominant,
+                score=float(statistics.median(dominant_scores)),
+                members=members,
+            )
+        )
+    niches.sort(key=lambda niche: (CLASS_ORDER.index(niche.klass), -niche.score, niche.topic))
+    return niches
+
+
+def serialize_showcase(
+    ranked: list[RankedPhrase], generated_at: date | None = None, *, result: ClusteringResult | None = None
+) -> dict:
+    """Отранжированная витрина (+ результат кластеризации) → словарь артефакта.
+
+    ``result`` keyword-only: третий позиционный аргумент исторически был
+    ``generated_at``, и позиционный вызов со старой сигнатурой молча скормил
+    бы ``date`` в ``build_niches`` с невнятным AttributeError.
+    """
+
+    niches = build_niches(ranked, result) if result is not None else []
     return {
         "schema": SCHEMA,
         "generated_at": (generated_at or date.today()).isoformat(),
+        "niches": [
+            {
+                "topic": niche.topic,
+                "class": niche.klass.name,
+                "score": round(niche.score, 6),
+                "phrases": [
+                    {"phrase": row.phrase, "rank": row.rank}
+                    for row in niche.members[:NICHE_TOP_PHRASES]
+                ],
+            }
+            for niche in niches
+        ],
         "phrases": [
             {
                 "phrase": row.phrase,
@@ -73,14 +175,20 @@ def serialize_showcase(
 
 
 def save_showcase(
-    ranked: list[RankedPhrase], path: Path | str, generated_at: date | None = None
+    ranked: list[RankedPhrase],
+    path: Path | str,
+    generated_at: date | None = None,
+    *,
+    result: ClusteringResult | None = None,
 ) -> Path:
-    """Витрина → файл артефакта (каталог результатов сбора)."""
+    """Витрина (+ результат кластеризации) → файл артефакта."""
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        json.dumps(serialize_showcase(ranked, generated_at), ensure_ascii=False, indent=2),
+        json.dumps(
+            serialize_showcase(ranked, generated_at, result=result), ensure_ascii=False, indent=2
+        ),
         encoding="utf-8",
     )
     return target
@@ -95,7 +203,19 @@ def load_showcase(path: Path | str) -> dict:
     phrases = data.get("phrases")
     if not isinstance(phrases, list):
         raise ShowcaseError("артефакт без списка phrases")
+    niches = data.get("niches", [])
+    if not isinstance(niches, list):
+        raise ShowcaseError("артефакт с некорректным списком niches")
     return data
 
 
-__all__ = ["SCHEMA", "ShowcaseError", "load_showcase", "save_showcase", "serialize_showcase"]
+__all__ = [
+    "NICHE_TOP_PHRASES",
+    "Niche",
+    "SCHEMA",
+    "ShowcaseError",
+    "build_niches",
+    "load_showcase",
+    "save_showcase",
+    "serialize_showcase",
+]
