@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from scripts import build_site
+from tests.test_showcase import _growing_record
 from wordstat_trends.loader import parse_dynamics_rows
 from wordstat_trends.showcase import save_showcase
 from wordstat_trends.trends.ranking import phrase_record_from_frame
@@ -29,28 +30,6 @@ def _record(csv_name: str, phrase: str):
     rows = parse_dynamics_rows((FIXTURES / csv_name).read_text(encoding="utf-8-sig"))
     frame = pd.DataFrame(rows, columns=["period", "queries", "share_pct"])
     return phrase_record_from_frame(frame, phrase=phrase)
-
-
-def _growing_record():
-    # синтетический рост поверх сезонной фикстуры (как в test_showcase):
-    # последние месяцы окна скоринга удвоены
-    import numpy as np
-
-    from wordstat_trends.forecasting.baseline import to_monthly_series
-    from wordstat_trends.trends.growth import SCORE_WINDOW
-    from wordstat_trends.trends.ranking import phrase_record
-
-    pattern = to_monthly_series(
-        pd.DataFrame(parse_dynamics_rows((FIXTURES / "dynamics_seasonal.csv").read_text(encoding="utf-8-sig")),
-                     columns=["period", "queries", "share_pct"])
-    ).iloc[:12].to_numpy()
-    flat = pd.Series(
-        np.tile(pattern.astype(float), 3),
-        index=pd.PeriodIndex(pd.period_range("2024-01", periods=36, freq="M"), freq="M"),
-        name="queries",
-    )
-    flat.iloc[-SCORE_WINDOW:] = flat.iloc[-SCORE_WINDOW:] * 2.0
-    return phrase_record(flat, phrase="синтетический рост")
 
 
 def _records() -> list:
@@ -200,6 +179,20 @@ def test_zh_svg_same_points(site):
         return re.findall(r"<polyline[^>]*points=\"([^\"]+)\"", page)
 
     assert points(site["trends.html"]) == points(site["zh/trends.html"])
+
+
+# --- битый ряд в артефакте ------------------------------------------------------
+
+
+def test_broken_series_raises_build_error():
+    # отсутствие ключей / кривые значения / кривой период — BuildError,
+    # а не сырой KeyError/ValueError (контракт load_artifact)
+    with pytest.raises(build_site.BuildError, match="ряд истории"):
+        build_site.render_series_svg({"periods": ["2024-01"]}, 3, "ru")  # нет values
+    with pytest.raises(build_site.BuildError, match="ряд истории"):
+        build_site.render_series_svg({"periods": ["2024-01"], "values": ["x"]}, 3, "ru")
+    with pytest.raises(build_site.BuildError, match="ряд истории"):
+        build_site.render_series_svg({"periods": ["январь"], "values": [1.0]}, 3, "ru")
 
 
 # --- обратная совместимость v1 -------------------------------------------------

@@ -393,8 +393,14 @@ def render_series_svg(
 
     if not series:
         return ""
-    values = [float(v) for v in series["values"]]
-    periods = [str(p) for p in series["periods"]]
+    # Битый ряд — BuildError, а не сырой KeyError/ValueError: тот же
+    # контракт, что у load_artifact (испорченный артефакт — громкий отказ).
+    try:
+        values = [float(v) for v in series["values"]]
+        periods = [str(p) for p in series["periods"]]
+        edge_months = [_period_date(p) for p in (periods[0], periods[-1])]
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise BuildError(f"ряд истории в артефакте битый: {exc}") from exc
     if len(values) != len(periods) or not values:
         raise BuildError("ряд истории в артефакте битый: длины periods/values не совпадают")
     points = chart_points(values)
@@ -408,8 +414,8 @@ def render_series_svg(
         for x, y in points[split:]
     )
     top_value = max(values)
-    first_month = format_month(_period_date(periods[0]), code)
-    last_month = format_month(_period_date(periods[-1]), code)
+    first_month = format_month(edge_months[0], code)
+    last_month = format_month(edge_months[1], code)
     baseline = _CHART_H - _CHART_PAD_BOTTOM
     return (
         f'<figure class="trend-figure">\n'
