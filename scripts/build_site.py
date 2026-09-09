@@ -18,7 +18,8 @@
 HTML-фрагменты данных (строки таблиц, секции) строятся здесь с теми же
 {{ключами}} и проходят через `render` — опечатка в ключе падает так же.
 Запуск: `python scripts/build_site.py [выходной-каталог] [--artifact путь]`
-(по умолчанию _site; --artifact опционален).
+(по умолчанию _site и site_data/showcase.json — артефакт, который
+Dokku-сборка коммитит в репозиторий, issue #107).
 """
 
 from __future__ import annotations
@@ -46,6 +47,15 @@ from wordstat_trends.i18n import (  # noqa: E402
 TEMPLATES_DIR = SITE_DIR / "templates"
 LOCALES_DIR = SITE_DIR / "locales"
 ASSETS_DIR = SITE_DIR / "assets"
+
+#: Каталог артефактов витрины в репозитории (issue #107): Dokku-сборка
+#: коммитит сюда JSON ранжирования; артефакт каждого прогона заменяет
+#: предыдущий, история живёт в git. Каталог не исключается .gitignore.
+SITE_DATA_DIR = SITE_DIR.parent / "site_data"
+
+#: Артефакт витрины по умолчанию (showcase/v2 из wordstat_trends.showcase);
+#: файла нет (первые сборки до коммита результатов) — пустое состояние.
+DEFAULT_ARTIFACT_PATH = SITE_DATA_DIR / "showcase.json"
 
 #: Схема артефакта (см. wordstat_trends.showcase.SCHEMA); строкой, а не
 #: импортом: showcase тянет pandas через trends.ranking, а сборка сайта
@@ -145,12 +155,16 @@ def lint_templates() -> None:
 def load_artifact(path: Path | str | None) -> dict | None:
     """Артефакт витрины целиком; None — файла нет или фраз в нём нет.
 
-    Битая схема — ошибка сборки: молча показать пустое состояние на
-    испорченном артефакте значило бы публиковать витрину «данных нет»
-    поверх существующих данных.
+    Отсутствие файла — не ошибка (пустое состояние, #21 п.7): первые
+    сборки Pages идут до того, как Dokku-контейнер закоммитит первый
+    артефакт в site_data/. Битая схема — ошибка сборки: молча показать
+    пустое состояние на испорченном артефакте значило бы публиковать
+    витрину «данных нет» поверх существующих данных.
     """
 
     if path is None:
+        return None
+    if not Path(path).exists():
         return None
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema") != SHOWCASE_SCHEMA:
@@ -308,11 +322,14 @@ def render(template: str, messages: dict[str, str], context: dict[str, str], whe
 
 def build(
     out_dir: Path, build_date: date | None = None, artifact_path: Path | str | None = None
-) -> list[Path]:
-    """Собирает страницы обеих локалей и ассеты; возвращает список страниц.
+) -> tuple[list[Path], dict | None]:
+    """Собирает страницы обеих локалей и ассеты.
 
-    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2); его
-    отсутствие/пустота → пустое состояние (сборка не падает, #21 п.7).
+    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2). Возвращает
+    (страницы, артефакт): артефакт — загруженный JSON или None при
+    отсутствии/пустоте — тогда пустое состояние (сборка не падает, #21 п.7).
+    Вызывающий (main) использует его для итогового сообщения, не
+    перечитывая файл.
     """
     locales = load_locales()
     lint_templates()
@@ -376,18 +393,22 @@ def build(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(page, encoding="utf-8")
             written.append(target)
-    return written
+    return written, artifact
 
 
 def main(argv: list[str]) -> int:
     # argv — как из sys.argv (с именем скрипта), parse_args ждёт аргументы без него
     args = parse_args(argv[1:])
     try:
-        pages = build(args.out_dir, artifact_path=args.artifact)
+        pages, artifact = build(args.out_dir, artifact_path=args.artifact)
     except BuildError as exc:
         print(f"ошибка сборки: {exc}", file=sys.stderr)
         return 1
-    source = f" из {args.artifact}" if args.artifact else ""
+    # источник печатается, только когда артефакт реально загружен (файл есть
+    # и фразы в нём есть): дефолтный путь задан всегда, а файла может не быть —
+    # витрина тогда пустая, и «из site_data/showcase.json» в логе вводило бы
+    # в заблуждение
+    source = f" из {args.artifact}" if artifact else ""
     dirs = ", ".join(sorted(set(p.parent.name or "." for p in pages)))
     print(f"собрано {len(pages)} страниц ({dirs}) → {args.out_dir}/{source}")
     return 0
@@ -401,8 +422,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--artifact",
         type=Path,
-        default=None,
-        help="JSON-артефакт витрины (showcase/v2); без него — пустое состояние",
+        default=DEFAULT_ARTIFACT_PATH,
+        help=f"JSON-артефакт витрины (по умолчанию {DEFAULT_ARTIFACT_PATH}); "
+        "нет файла или фраз — пустое состояние",
     )
     return parser.parse_args(argv)
 

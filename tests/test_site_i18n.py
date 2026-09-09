@@ -242,6 +242,42 @@ def test_phrase_html_escaped(tmp_path):
     assert "&lt;script&gt;" in page
 
 
+# --- пересборка витрины из артефакта в репо (issue #107) --------------------
+
+
+def test_default_artifact_path_in_tracked_site_data():
+    # путь артефакта зафиксирован в репо: site_data/showcase.json; каталог
+    # не должен попадать под паттерн .gitignore — иначе витрина навсегда
+    # останется в пустом состоянии
+    assert build_site.DEFAULT_ARTIFACT_PATH.parent.name == "site_data"
+    assert build_site.DEFAULT_ARTIFACT_PATH.name == "showcase.json"
+    gitignore = (Path(build_site.SITE_DIR).parent / ".gitignore").read_text(encoding="utf-8")
+    for line in gitignore.splitlines():
+        pattern = line.split("#", 1)[0].strip().rstrip("/")
+        assert pattern != "site_data", ".gitignore исключает каталог артефактов"
+
+
+def test_missing_default_artifact_builds_empty_state(tmp_path, monkeypatch):
+    # до первого коммита результатов файлом site_data/showcase.json нет —
+    # Pages-сборка не падает, витрина в пустом состоянии (#21 п.7)
+    monkeypatch.setattr(build_site, "DEFAULT_ARTIFACT_PATH", tmp_path / "missing.json")
+    out = tmp_path / "site"
+    assert build_site.main(["build_site.py", str(out)]) == 0
+    assert "Данных пока нет" in (out / "trends.html").read_text(encoding="utf-8")
+
+
+def test_default_artifact_used_when_present(tmp_path, monkeypatch):
+    # артефакт по умолчанию читается без явного --artifact: дата данных —
+    # generated_at артефакта через i18n-форматтер, не дата сборки
+    artifact = _artifact_file(tmp_path)
+    monkeypatch.setattr(build_site, "DEFAULT_ARTIFACT_PATH", artifact)
+    out = tmp_path / "site"
+    assert build_site.main(["build_site.py", str(out)]) == 0
+    page = (out / "trends.html").read_text(encoding="utf-8")
+    assert "синтетический рост" in page
+    assert "Данные от 9 сентября 2026 г." in page
+
+
 def test_placeholder_braces_in_data_neutralized(tmp_path):
     # фраза-данные вида {{ключ}} не должна занимать позицию шаблона:
     # иначе подставится локализованная строка или сборка упадёт на

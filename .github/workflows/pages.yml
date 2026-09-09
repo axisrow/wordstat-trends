@@ -29,8 +29,12 @@ jobs:
           python-version: "3.12"
 
       # Сборка сайта — stdlib (src/wordstat_trends/i18n.py), зависимости проекта не нужны.
+      # Данные — артефакт ранжирования, закоммиченный Dokku-сборкой в site_data/
+      # (issue #107): файл нужен из коммита, не из облака; файла нет — пустое состояние.
       - name: Собрать сайт
-        run: uv run --no-project python scripts/build_site.py
+        run: >
+          uv run --no-project python scripts/build_site.py
+          --artifact site_data/showcase.json
 
       - name: Загрузить артефакт Pages
         uses: actions/upload-pages-artifact@v3
