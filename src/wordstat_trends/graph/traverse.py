@@ -34,10 +34,12 @@ import heapq
 from dataclasses import dataclass, field
 from typing import Protocol
 
-#: Частотность seed-фразы: у seed нет родительского ребра, поэтому в кучу
-#: фронтира они идут с бесконечным весом — раскрываются раньше любых
-#: найденных фраз (порядок самих seed детерминирован лексикографией).
-SEED_FREQUENCY = float("inf")
+#: Частотность seed-фразы. У seed нет родительского ребра, поэтому в порядке
+#: фронтира они идут первыми — но не «бесконечной частотой» (``inf`` в
+#: сериализуемом состоянии дала бы нестандартный JSON ``Infinity``), а
+#: явным флагом ``FrontierEntry.is_seed``. Значение конечно и в сравнении
+#: не участвует.
+SEED_FREQUENCY = 0.0
 
 
 @dataclass(frozen=True)
@@ -85,17 +87,23 @@ class TraversalLimits:
 class FrontierEntry:
     """Фраза во фронтире: кандидат на раскрытие.
 
-    Порядок в куче — по убыванию частотности, при равенстве по фразе
-    (лексикографически): детерминированный порядок без зависимости от
-    того, в каком порядке провайдер вернул соседей.
+    Порядок в куче: seed раньше найденных фраз (``is_seed``), затем по
+    убыванию частотности, при равенстве по фразе (лексикографически) —
+    детерминированный порядок без зависимости от того, в каком порядке
+    провайдер вернул соседей. Все поля сериализуемы в стандартный JSON.
     """
 
     phrase: str
     frequency: float
     depth: int
+    is_seed: bool = False
 
     def __lt__(self, other: FrontierEntry) -> bool:
-        return (-self.frequency, self.phrase) < (-other.frequency, other.phrase)
+        return (not self.is_seed, -self.frequency, self.phrase) < (
+            not other.is_seed,
+            -other.frequency,
+            other.phrase,
+        )
 
 
 @dataclass
@@ -142,7 +150,8 @@ def run_traversal(
     """Расширить ``state`` обходом от ``seeds`` в пределах ``limits``.
 
     Первый запуск (``state=None``): seed попадают во фронтир на глубине 0
-    с ``SEED_FREQUENCY`` и проходят через общий цикл — visited у ядра
+    (флаг ``is_seed``, раскрываются раньше найденных фраз) и проходят через
+    общий цикл — visited у ядра
     значит «в словаре И раскрыта», поэтому seed не может быть отсечён
     проверкой дубля. Продолжение (передано состояние прошлого запуска):
     уже посещённые seed не переустанавливаются, обход идёт дальше с
@@ -163,7 +172,7 @@ def run_traversal(
     in_frontier = {entry.phrase for entry in state.frontier}
     for seed in sorted(set(seeds)):
         if seed not in state.visited and seed not in in_frontier:
-            state.frontier.append(FrontierEntry(phrase=seed, frequency=SEED_FREQUENCY, depth=0))
+            state.frontier.append(FrontierEntry(phrase=seed, frequency=SEED_FREQUENCY, depth=0, is_seed=True))
 
     heap: list[FrontierEntry] = list(state.frontier)
     heapq.heapify(heap)
@@ -171,6 +180,7 @@ def run_traversal(
 
     provider_calls = 0
     truncated_by_depth = False
+    truncated_by_phrases = False
 
     while heap:
         entry = heapq.heappop(heap)
@@ -181,6 +191,10 @@ def run_traversal(
             state.frontier.append(entry)
             continue
         if len(state.visited) >= limits.max_phrases:
+            # причина сохранения кандидата фиксируется по факту ветки:
+            # «во фронтире что-то осталось» само по себе не значит обрезку
+            # по фразам (могли остаться только depth-обрезанные записи)
+            truncated_by_phrases = True
             state.frontier.append(entry)
             continue
 
@@ -195,8 +209,6 @@ def run_traversal(
                 heap,
                 FrontierEntry(phrase=neighbor.phrase, frequency=float(neighbor.frequency), depth=entry.depth + 1),
             )
-
-    truncated_by_phrases = len(state.visited) >= limits.max_phrases and bool(state.frontier)
 
     return TraversalResult(
         state=state,

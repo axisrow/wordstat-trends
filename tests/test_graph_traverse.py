@@ -1,5 +1,7 @@
 """Тесты ядра обхода графа запросов (issue #81).
 
+
+
 Провайдер рёбер — синтетический: реального источника нет, пока не закрыт
 wordstat-cli#62 (``top_related`` отдаёт 0 строк). Все графы ниже —
 dict «фраза → соседи с частотностями», требования #81: детерминированность,
@@ -115,6 +117,17 @@ class TestSeeds:
 
 
 class TestLimits:
+    def test_phrase_cap_with_only_depth_leftovers_flags_depth_not_phrases(self):
+        # пограничный случай из ревью: словарь достиг max_phrases, но во
+        # фронтире остались ТОЛЬКО depth-обрезанные записи — обрезки по
+        # фразам не было, флаг должен это отражать
+        provider = DictProvider({"a": [("b", 10)], "b": [("c", 5)], "c": []})
+        result = run_traversal(["a"], provider, TraversalLimits(max_phrases=2, max_depth=1))
+        assert result.phrases == ["a", "b"]
+        assert len(result.state.visited) == 2
+        assert result.truncated_by_depth
+        assert not result.truncated_by_phrases
+
     def test_max_phrases_truncates_and_flags(self):
         provider = DictProvider({"a": [("b", 10), ("c", 9), ("d", 8)]})
         result = run_traversal(["a"], provider, TraversalLimits(max_phrases=3, max_depth=5))
@@ -191,6 +204,35 @@ class TestIdempotency:
 
 
 class TestProviderContract:
+    def test_seed_expanded_before_any_found_phrase(self):
+        # у seed больше нет «бесконечной частотности» (inf не сериализуется
+        # в стандартный JSON): первенство даёт явный is_seed, поэтому даже
+        # сосед с гигантской частотностью раскрывается после seed
+        provider = DictProvider({"b": [("z", 10**9)], "z": []})
+        result = run_traversal(["b"], provider, TraversalLimits(max_phrases=10, max_depth=1))
+        assert provider.calls == ["b", "z"]
+        assert result.phrases == ["b", "z"]
+
+    def test_state_is_standard_json_serializable(self):
+        # состояние попадёт в персистентность #82 как есть: ни inf, ни
+        # прочих значений, которые json.dumps кодирует нестандартно
+        import json
+
+        provider = DictProvider({"a": [("b", 10), ("c", 9)], "b": [], "c": []})
+        result = run_traversal(["a"], provider, TraversalLimits(max_phrases=2, max_depth=5))
+        payload = json.dumps(
+            {
+                "visited": result.state.visited,
+                "frontier": [
+                    {"phrase": e.phrase, "frequency": e.frequency, "depth": e.depth, "is_seed": e.is_seed}
+                    for e in result.state.frontier
+                ],
+            }
+        )
+        assert "Infinity" not in payload
+        assert "NaN" not in payload
+
+
     def test_provider_ignoring_unknown_phrase(self):
         # провайдер может не знать фразу (нет рёбер) — это тупик, не ошибка
         provider = DictProvider({})
