@@ -41,6 +41,8 @@ def test_run_metadata_records_commit_input_hash_and_versions(tmp_path: Path) -> 
     assert meta["seed"] == 7
     assert meta["packages"]["scikit-learn"]  # дистрибутивное имя, не import-имя
     assert set(meta["packages"]) == set(run_meta.TRACKED_PACKAGES)
+    # Неустановленный пакет — честная пометка, не PackageNotFoundError
+    assert run_meta._package_version("wordstat-trends-definitely-not-installed") == run_meta.VERSION_UNKNOWN
     assert meta["python"]
     # В git-checkout коммит известен; «unknown» допустим только вне репо
     if meta["git_commit"] != run_meta.COMMIT_UNKNOWN:
@@ -76,9 +78,17 @@ def test_cheapest_experiment_rerun_is_byte_identical() -> None:
 
     first, second = outputs
     if first != second:
-        first_json = json.loads(first)
-        second_json = json.loads(second)
-        # Понятное сообщение: что именно разошлось (слот run против чисел).
+        # Понятное сообщение при любом виде расхождения: сначала убедиться,
+        # что stdout — валидный JSON (диагностический print в скрипте не
+        # должен превращать эту диагностику в нечитаемый traceback от loads).
+        reports = []
+        for output in (first, second):
+            try:
+                reports.append(json.loads(output))
+            except json.JSONDecodeError as error:
+                pytest.fail(f"stdout скрипта не является JSON ({error}): {output[:200]!r}...")
+        first_json, second_json = reports
+        # Что именно разошлось: слот run (метаданные) против чисел.
         if first_json.get("run") != second_json.get("run"):
             pytest.fail(
                 "Расхождение в метаданных прогона (слот run) между двумя "

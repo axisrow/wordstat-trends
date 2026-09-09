@@ -27,6 +27,18 @@ TRACKED_PACKAGES = ("sktime", "statsmodels", "statsforecast", "scikit-learn", "n
 #: git-checkout) — честная пометка вместо падения или пустого поля.
 COMMIT_UNKNOWN = "unknown"
 
+#: Значение версии пакета, когда он не установлен в текущем окружении
+#: (как COMMIT_UNKNOWN для git): метаданные — диагностика, а не гейт,
+#: честная пометка лучше traceback посреди эксперимента.
+VERSION_UNKNOWN = "not-installed"
+
+
+def _package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return VERSION_UNKNOWN
+
 
 def _git_commit(repo_root: Path) -> tuple[str, bool]:
     """(коммит HEAD, есть ли незакоммиченные изменения). Обе проверки —
@@ -86,10 +98,10 @@ def run_metadata(inputs: tuple[Path, ...] = (), seed: int | tuple[int, ...] | No
         "git_commit": commit,
         "git_dirty": dirty,
         "python": platform.python_version(),
-        "packages": {name: importlib.metadata.version(name) for name in TRACKED_PACKAGES},
+        "packages": {name: _package_version(name) for name in TRACKED_PACKAGES},
         "seed": seed,
         "inputs": [_dataset_entry(path, repo_root) for path in inputs],
     }
 
 
-__all__ = ["COMMIT_UNKNOWN", "TRACKED_PACKAGES", "dataset_sha256", "run_metadata"]
+__all__ = ["COMMIT_UNKNOWN", "TRACKED_PACKAGES", "VERSION_UNKNOWN", "dataset_sha256", "run_metadata"]
