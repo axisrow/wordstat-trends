@@ -44,12 +44,8 @@ KNOWN_EMPTY_VIEWS = ("top_popular", "top_related")
 #: веб-UI; в реальном CSV замера #2 — обычный ASCII-пробел (побайтово, DATA.md).
 NBSP = " "
 
-#: BOM как текстовый символ (U+FEFF) — снимается перед csv.reader.
-_BOM = "﻿"
-
 _Queries = re.compile(r"^\d{1,3}( \d{3})*$")
 _Share = re.compile(r"^\d+(,\d+)?$")
-
 
 @dataclass(frozen=True)
 class Violation:
@@ -63,7 +59,6 @@ class Violation:
     def __str__(self) -> str:
         place = f"{self.source}: " if self.source else ""
         return f"[{self.severity}] {place}{self.check}: {self.message}"
-
 
 @dataclass
 class RunReport:
@@ -100,10 +95,12 @@ def validate_dynamics_csv(data: bytes, *, source: str = "") -> list[Violation]:
     if b"\n" in data:
         add("line-endings", "переводы строк не CR-only: в файле есть \\n (ожидался только \\r)")
 
+    # utf-8-sig снимает BOM при decode — дополнительная зачистка не нужна
+    # (в loader она защита для прямых вызовов с сырым текстом; здесь вход — bytes).
     text = data.decode("utf-8-sig", errors="replace")
 
     # --- Заголовок: ровно 4 поля, имена дословно из замера #2 -----------------
-    rows = list(csv.reader(io.StringIO(text.lstrip(_BOM), newline=""), delimiter=";"))
+    rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=";"))
     rows = [r for r in rows if any(c.strip() for c in r)]
     if not rows:
         add("schema", "файл не содержит строк")
@@ -207,7 +204,7 @@ def validate_run(run_directory: Path) -> RunReport:
         rows = [
             r
             for r in csv.reader(
-                io.StringIO(path.read_text(encoding="utf-8-sig").lstrip(_BOM), newline=""),
+                io.StringIO(path.read_text(encoding="utf-8-sig")),
                 delimiter=";",
             )
             if any(c.strip() for c in r)
@@ -230,14 +227,18 @@ def validate_dataset(paths) -> list[RunReport]:
     reports = []
     for p in paths:
         p = Path(p)
-        if (p / "dynamics.csv").is_file() or (p / "manifest.json").is_file():
+        if not p.exists():
+            reports.append(RunReport(str(p), [Violation("io", "путь не существует", str(p))]))
+        elif (p / "dynamics.csv").is_file() or (p / "manifest.json").is_file():
             reports.append(validate_run(p))
         elif p.is_file():
             reports.append(RunReport(str(p), validate_dynamics_csv(p.read_bytes(), source=str(p))))
         else:
-            reports.append(RunReport(str(p), [Violation("io", "не найден", str(p))]))
+            # Существующий каталог без dynamics.csv и manifest.json — не run-каталог;
+            # отдельное сообщение, чтобы не путать с несуществующим путём.
+            report = RunReport(str(p), [Violation("io", "не run-каталог и не dynamics.csv", str(p))])
+            reports.append(report)
     return reports
-
 
 __all__ = [
     "HEADER",

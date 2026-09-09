@@ -217,7 +217,18 @@ def test_cli_no_args():
 
 def test_cli_missing_path(tmp_path, capsys):
     assert cli_main([str(tmp_path / "нет такого")]) == 1
-    assert "не найден" in capsys.readouterr().out
+    assert "не существует" in capsys.readouterr().out
+
+
+def test_existing_dir_without_run_markers(tmp_path, capsys):
+    # Существующий каталог без dynamics.csv и manifest.json — не «не найден»,
+    # а отдельное сообщение: путь есть, но это не run-каталог и не выгрузка.
+    empty = tmp_path / "каталог"
+    empty.mkdir()
+    assert cli_main([str(empty)]) == 1
+    out = capsys.readouterr().out
+    assert "не run-каталог" in out
+    assert "не найден" not in out
 
 
 def test_validate_dataset_mixes_run_dirs_and_csv(tmp_path):
