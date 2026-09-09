@@ -36,6 +36,11 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    # Сетевые прогоны живых моделей — в CI не входят, запуск руками:
+    # WORDSTAT_TRENDS_NLP_SMOKE=1 uv run pytest -m network (extra `nlp`).
+    "network: тесты с выходом в сеть, в CI не запускаются",
+]
 
 [tool.ruff]
 line-length = 120
