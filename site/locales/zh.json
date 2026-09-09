@@ -35,5 +35,13 @@
   "footer.built": "网站骨架构建于",
   "footer.license": "代码采用 MIT 许可证",
   "footer.issue": "GitHub 仓库",
-  "common.skipToContent": "跳转到内容"
+  "common.skipToContent": "跳转到内容",
+  "trend.class.growing": "增长",
+  "trend.class.seasonal": "季节性",
+  "trend.class.falling": "下降",
+  "trend.class.stable": "平稳",
+  "explain.growing": "较预测增长{ratio}倍，增长已持续{months}个月",
+  "explain.seasonal": "稳定季节性，无增长",
+  "explain.falling": "比预测低{ratio}倍",
+  "explain.stable": "需求平稳"
 }
