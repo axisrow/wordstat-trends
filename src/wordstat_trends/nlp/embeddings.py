@@ -38,7 +38,7 @@ def _model():
         from sentence_transformers import SentenceTransformer
     except ImportError as error:  # pragma: no cover - тривиальная ветка, проверена тестом
         raise ImportError(
-            "эмуляции нужны sentence-transformers и torch из extra `nlp`: "
+            "для эмбеддингов нужны sentence-transformers и torch из extra `nlp`: "
             "uv sync --extra nlp"
         ) from error
     return SentenceTransformer(MODEL_NAME)
