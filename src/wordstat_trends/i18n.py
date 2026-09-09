@@ -79,6 +79,19 @@ def format_month(month: date, locale: Locale | str = Locale.RU) -> str:
     return f"{_RU_MONTHS[month.month - 1]} {month.year}"
 
 
+def format_ratio(value: float, locale: Locale | str = Locale.RU) -> str:
+    """Отношение «факт/прогноз» (issue #20: «рост к прогнозу в 2,3 раза»).
+
+    Один десятичный знак — достаточная точность для подписи витрины;
+    разделитель по локали: ru «2,3», zh «2.3». Значения — реальные
+    ``GrowthScore.score`` из tests/fixtures (например 0.5 у падающей
+    синтетики, 2.0 у растущей), а не абстрактные примеры.
+    """
+    locale = normalize_locale(str(locale))
+    rendered = f"{value:.1f}"
+    return rendered if locale is Locale.ZH else rendered.replace(".", ",")
+
+
 def format_date(day: date, locale: Locale | str = Locale.RU) -> str:
     """Полная дата: ru «9 сентября 2026 г.», zh «2026年9月9日»."""
     locale = normalize_locale(str(locale))
