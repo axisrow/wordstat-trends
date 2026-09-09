@@ -33,3 +33,9 @@ jobs:
       # cwd должен быть на sys.path.
       - name: pytest
         run: uv run python -m pytest -q
+
+      # Проверка пересчёта (issue #95): повторный запуск самого дешёвого
+      # детерминированного эксперимента (issue13 --tfidf) обязан давать
+      # побайтово тот же JSON; отсечён из `pytest -q` маркером slow.
+      - name: Проверка пересчёта (побайтовая воспроизводимость)
+        run: uv run python -m pytest -q tests/test_reproducibility.py -m slow

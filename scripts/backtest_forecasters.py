@@ -20,6 +20,7 @@ BacktestError в ``wordstat_trends.forecasting.backtest``).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -43,7 +44,9 @@ from wordstat_trends.forecasting.backtest import (  # noqa: E402
     write_backtest_report,
 )
 from wordstat_trends.forecasting.baseline import to_monthly_series  # noqa: E402
+from wordstat_trends.forecasting.models import RANDOM_STATE  # noqa: E402
 from wordstat_trends.loader import load_run  # noqa: E402
+from wordstat_trends.run_meta import run_metadata  # noqa: E402
 
 OUTPUTS_DIR = Path(__file__).resolve().parent.parent / "outputs"
 
@@ -78,10 +81,21 @@ def main(argv: list[str] | None = None) -> int:
     summary = summarize_backtest(table)
     table_path, summary_path = write_backtest_report(table, summary, OUTPUTS_DIR)
 
+    # Метаданные прогона (issue #95) рядом с CSV: seed=RANDOM_STATE —
+    # единственная стохастика прогона (init-розыгрыш AutoETS, аудит в
+    # wordstat_trends/seeds.py). Входы — dynamics.csv каждого run-каталога.
+    run_dirs = [Path(a) / "dynamics.csv" for a in args]
+    meta_path = OUTPUTS_DIR / "backtest_run_meta.json"
+    meta_path.write_text(
+        json.dumps(run_metadata(inputs=tuple(run_dirs), seed=RANDOM_STATE), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     pd.set_option("display.float_format", lambda v: f"{v:.4f}")
     print(summary.to_string(index=False))
     print(f"\nтаблица:   {table_path}")
     print(f"сводная:   {summary_path}")
+    print(f"метаданные: {meta_path}")
     return 0
 
 

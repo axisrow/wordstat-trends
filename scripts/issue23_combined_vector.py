@@ -101,6 +101,7 @@ from scripts.experiment_vector_d import (
     truncate_series,
     vector_from_fitted,
 )
+from wordstat_trends.run_meta import run_metadata
 
 PHRASES = [
     "seasonal (новогодние подарки)",
@@ -349,7 +350,14 @@ def structure_fingerprint(structure: dict[str, float | None]) -> list[str]:
 
 
 def main() -> int:
-    report: dict = {"phrases": {}, "representations": {}, "refits": {}}
+    # seed=None: ETS-фиты детерминированы сеткой спецификаций, стохастики
+    # нет (аудит в wordstat_trends/seeds.py)
+    report: dict = {
+        "run": run_metadata(inputs=tuple(DAILY_FIXTURES.values()) + tuple(FIXTURES.values())),
+        "phrases": {},
+        "representations": {},
+        "refits": {},
+    }
 
     # --- Блоки и векторы на полном train-окне ---
     daily_series: dict[str, pd.Series] = {}

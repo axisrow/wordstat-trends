@@ -53,6 +53,8 @@ from sklearn.metrics import adjusted_rand_score, silhouette_score
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from wordstat_trends.nlp.lemmatize import lemmatized_phrase
+from wordstat_trends.run_meta import run_metadata
+from wordstat_trends.seeds import KMEANS_SEEDS
 
 # Seed-фразы фикстур Фазы 1 (dynamics_*.csv) + словарь похожих/разных фраз.
 # Ключ — имя ожидаемой темы (= ground truth), порядок детерминирован.
@@ -119,7 +121,7 @@ PHRASE_GROUPS: dict[str, list[str]] = {
     ],
 }
 
-SEEDS = (0, 1, 2, 42)
+SEEDS = KMEANS_SEEDS
 TOP_TERMS = 5
 TOP_PHRASES = 3
 
@@ -296,7 +298,12 @@ def _default_embed_fn():
 
 def main() -> int:
     phrases, expected = build_dataset()
-    report: dict = {"n_phrases": len(phrases), "n_expected_groups": len(PHRASE_GROUPS), "pipelines": {}}
+    report: dict = {
+        "run": run_metadata(seed=KMEANS_SEEDS),
+        "n_phrases": len(phrases),
+        "n_expected_groups": len(PHRASE_GROUPS),
+        "pipelines": {},
+    }
 
     report["pipelines"]["tfidf_lemmas"] = run_tfidf_pipeline(phrases, expected)
 

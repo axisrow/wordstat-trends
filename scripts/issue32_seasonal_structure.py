@@ -34,6 +34,8 @@ from experiment_vector_d import load_daily_dynamics_csv, truncate_series  # noqa
 from sktime.forecasting.ets import AutoETS  # noqa: E402
 from statsmodels.tsa.exponential_smoothing.ets import ETSModel  # noqa: E402
 
+from wordstat_trends.run_meta import run_metadata  # noqa: E402
+
 FIXTURES = {
     "seasonal": REPO / "tests/fixtures/dynamics_daily_seasonal_mvp.csv",
     "mid_freq": REPO / "tests/fixtures/dynamics_daily_mid_freq_mvp.csv",
@@ -43,6 +45,9 @@ WINDOWS = [56, 49, 42, 35, 28, 21, 14]
 TRAIN_WINDOW = 56
 SP = 7
 N_REPS = 100
+# Исторический seed прогона #32 (артефакт записан с ним) — см. аудит в
+# wordstat_trends/seeds.py: менять значение = ломать воспроизводимость
+# закрытого результата, место в общей политике — там же.
 SEED = 32
 
 
@@ -235,7 +240,11 @@ def main() -> None:
             }
             print(name, cond, sim[name][cond])
 
-    results = {"real": real, "simulation": sim}
+    results = {
+        "run": run_metadata(inputs=tuple(FIXTURES.values()), seed=SEED),
+        "real": real,
+        "simulation": sim,
+    }
     out = Path("/tmp/issue32_seasonal_structure_results.json")
     out.write_text(json.dumps(results, indent=1, default=str))
     print("saved", out)

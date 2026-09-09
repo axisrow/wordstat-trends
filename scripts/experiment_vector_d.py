@@ -55,6 +55,8 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
 import numpy as np
 import pandas as pd
 
+from wordstat_trends.run_meta import run_metadata
+
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 FIXTURES = {
@@ -801,7 +803,8 @@ def is_comparison_unstable(comparison: dict, thresholds: dict) -> bool:
 
 
 def main() -> int:
-    report: dict = {"fixtures": {}}
+    # seed=None: в прогоне нет стохастики (см. аудит в wordstat_trends/seeds.py)
+    report: dict = {"run": run_metadata(inputs=tuple(FIXTURES.values())), "fixtures": {}}
     full_vectors: dict[str, ParamVector] = {}
     any_not_measurable = False
     any_unstable = False
@@ -876,7 +879,13 @@ def main_daily() -> int:
         )
 
     thresholds = DAILY_STABILITY_THRESHOLDS
-    report: dict = {"fixtures": {}, "thresholds": thresholds, "train_window_days": TRAIN_WINDOW_DAYS}
+    report: dict = {
+        # seed=None: стохастики нет (аудит в wordstat_trends/seeds.py)
+        "run": run_metadata(inputs=tuple(DAILY_FIXTURES.values())),
+        "fixtures": {},
+        "thresholds": thresholds,
+        "train_window_days": TRAIN_WINDOW_DAYS,
+    }
     full_vectors: dict[str, ParamVector] = {}
     any_not_measurable = False
     any_unstable = False
