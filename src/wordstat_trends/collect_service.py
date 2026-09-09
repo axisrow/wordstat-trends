@@ -381,8 +381,15 @@ class CollectService:
         left = self.cfg.graph_daily_budget - budget["spent"]
         picked = pick_pending(state, left, exclude=set(seeds))
         if picked:
-            budget["spent"] += len(picked)
-            store.save(state, budget)
+            try:
+                store.save(state, {"date": iso_day, "spent": budget["spent"] + len(picked)})
+            except OSError as exc:
+                # Бюджет не списан на диск — не списываем и в прогон: иначе
+                # собранные фразы достались бы обходу бесплатно, а рестарт
+                # внутри дня потратил бы лимит заново. Seed-прогон не роняем.
+                self._status.last_error = f"OSError: {exc}"
+                log.error("расширение пропущено: состояние не записано (%s)", exc)
+                return []
         return picked
 
     def _graph_advance(self, seeds: list[str]) -> None:

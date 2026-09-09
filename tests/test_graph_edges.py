@@ -137,3 +137,57 @@ def test_unexpected_columns_give_no_edges(tmp_path):
     pd.DataFrame({"что-то": ["иное"]}).to_parquet(run_dir / "top_related.parquet", index=False)
 
     assert ExportEdgeProvider(runs).neighbors("фраза") == []
+
+
+def test_non_numeric_frequency_row_is_skipped(tmp_path):
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260909T100000Z-фраза"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        '{"phrase": "фраза", "created_at": "2026-09-09T10:00:00Z", '
+        '"exports": [{"view": "top_related", "file": "top_related.parquet", "row_count": 2}]}',
+        encoding="utf-8",
+    )
+    # частотность ушла во float с NaN — битая строка не роняет остальные рёбра
+    pd.DataFrame(
+        {
+            "Запросы со словами": ["хороший сосед", "битый сосед"],
+            "Число запросов": [7.0, float("nan")],
+        }
+    ).to_parquet(run_dir / "top_related.parquet", index=False)
+
+    neighbors = ExportEdgeProvider(runs).neighbors("фраза")
+
+    assert neighbors == [RelatedPhrase(phrase="хороший сосед", frequency=7)]
+
+
+def test_malformed_exports_entries_give_no_source(tmp_path):
+    runs = tmp_path / "runs"
+    for name, exports in (
+        ("a", ["не dict"]),
+        ("b", "не список"),
+        ("c", [{"view": "top_related", "file": 42}]),
+    ):
+        run_dir = runs / f"20260909T10000{name}Z-фраза"
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"phrase": "фраза", "created_at": "2026-09-09T10:00:00Z", "exports": exports}),
+            encoding="utf-8",
+        )
+
+    provider = ExportEdgeProvider(runs)
+
+    assert not provider.has_export("фраза")
+    with pytest.raises(EdgesNotAvailable):
+        provider.neighbors("фраза")
+
+
+def test_non_object_manifest_is_skipped(tmp_path):
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260909T100000Z-фраза"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text('["список", "не объект"]', encoding="utf-8")
+
+    provider = ExportEdgeProvider(runs)
+
+    assert not provider.has_export("фраза")

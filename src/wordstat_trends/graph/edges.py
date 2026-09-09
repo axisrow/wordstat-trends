@@ -31,11 +31,23 @@ _PHRASE_PREFIX = "Запросы со словами"
 _FREQUENCY_PREFIX = "Число запросов"
 
 
-def _related_file_from_manifest(manifest: dict) -> str | None:
-    """Имя файла ``top_related`` из манифеста прогона (обычно дефолтное)."""
-    for export in manifest.get("exports", []):
-        if export.get("view") == "top_related":
-            return export.get("file")
+def _related_file_from_manifest(manifest: object) -> str | None:
+    """Имя файла ``top_related`` из манифеста прогона (обычно дефолтное).
+
+    Манифест — внешний файл, полной схемы у него здесь нет: не-dict в
+    ``exports`` или не-строка в ``file`` просто не дают источника рёбер,
+    а не роняют обход.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    exports = manifest.get("exports")
+    if not isinstance(exports, list):
+        return None
+    for export in exports:
+        if isinstance(export, dict) and export.get("view") == "top_related":
+            file = export.get("file")
+            if isinstance(file, str) and file:
+                return file
     return None
 
 
@@ -61,6 +73,9 @@ class ExportEdgeProvider:
             except (OSError, json.JSONDecodeError) as exc:
                 log.warning("прогон без читаемого манифеста, пропущен: %s (%s)", run_dir.name, exc)
                 continue
+            if not isinstance(manifest, dict):
+                log.warning("манифест не является объектом, прогон пропущен: %s", run_dir.name)
+                continue
             phrase = manifest.get("phrase")
             created_at = manifest.get("created_at")
             related = _related_file_from_manifest(manifest)
@@ -68,9 +83,11 @@ class ExportEdgeProvider:
                 continue
             if related is None:
                 continue
+            if not isinstance(created_at, str):
+                created_at = ""
             current = self._latest.get(phrase)
-            if current is None or (created_at or "") > current[0]:
-                self._latest[phrase] = (created_at or "", run_dir / related)
+            if current is None or created_at > current[0]:
+                self._latest[phrase] = (created_at, run_dir / related)
 
     def _iter_run_dirs(self) -> list[Path]:
         if not self._runs_root.is_dir():
@@ -105,7 +122,14 @@ class ExportEdgeProvider:
             text = str(text).strip()
             if not text:
                 continue
-            result.append(RelatedPhrase(phrase=text, frequency=int(freq)))
+            try:
+                frequency = int(freq)
+            except (TypeError, ValueError):
+                # битая строка экспорта (не-число/NaN в частотности) не должна
+                # отменять раскрытие остальных рёбер фразы
+                log.warning("нечисловая частотность у строки <%s> в экспорте <%s>, строка пропущена", text, phrase)
+                continue
+            result.append(RelatedPhrase(phrase=text, frequency=frequency))
         return result
 
 

@@ -218,6 +218,25 @@ def test_corrupt_state_disables_expansion_but_not_seed_collection(tmp_path, monk
     assert collected == ["seed один", "seed два"]
 
 
+def test_unwritable_state_file_skips_expansion_not_seed_run(tmp_path, monkeypatch):
+    graph = {"seed один": [("сосед", 500)]}
+    svc, collected = make_service(tmp_path, monkeypatch, graph=graph)
+    svc.scheduler_once()  # день 1: состояние создано, сосед во фронтире
+
+    # «диск сломался»: запись состояния падает — расширение дня 2 пропускается
+    monkeypatch.setattr(
+        "wordstat_trends.collect_service.GraphStateFile.save",
+        lambda self, state, budget: (_ for _ in ()).throw(OSError("нет места")),
+    )
+    svc.scheduler_once()
+
+    # seed-набор собран, фразы из фронтира не запланированы
+    assert collected == ["seed один", "seed два", "seed один", "seed два"]
+    state, budget = GraphStateFile(tmp_path / "graph_state.json").load()
+    assert budget == {"date": TODAY.isoformat(), "spent": 0}
+    assert svc.status()["last_error"].startswith("OSError")
+
+
 def test_store_roundtrip_through_service_file(tmp_path, monkeypatch):
     graph = {"seed один": [("сосед а", 500)]}
     svc, _ = make_service(tmp_path, monkeypatch, graph=graph)
