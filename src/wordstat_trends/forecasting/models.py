@@ -1,9 +1,10 @@
-"""Модели поверх каркаса валидации: Theta и AutoETS (issue #74, фаза 2.2).
+"""Модели поверх каркаса валидации: Theta, AutoETS и AutoARIMA-бенчмарк.
 
-Обе модели проходят через каркас из ``baseline.py`` — тот же
-``ExpandingWindowSplitter`` из ``sktime.split``, тот же ``evaluate``, та же
-метрика MASE. Никаких отдельных сплитов под модель: сравнение с сезонным
-наивным бейзлайном честно только на общих фолдах.
+Обе модели фазы 2.2 (#74) и бенчмарк фазы 2.3 (#75) проходят через каркас
+из ``baseline.py`` — тот же ``ExpandingWindowSplitter`` из ``sktime.split``,
+тот же ``evaluate``, та же метрика MASE. Никаких отдельных сплитов под
+модель: сравнение с сезонным наивным бейзлайном честно только на общих
+фолдах.
 
 Учёт накопленного в #32/#34 (там — дневные ряды, sp=7):
 
@@ -17,14 +18,23 @@
   окна. Начальное окно каркаса (72 месяца = 6 циклов) выбрано выше любого
   порога из #34, поэтому сезонная компонента доступна с первого фолда.
 
+AutoARIMA (issue #75) — бенчмарк для сравнения, НЕ кандидат в прод.
+Реализация — ``StatsForecastAutoARIMA`` из sktime: это обёртка над уже
+закреплённой зависимостью ``statsforecast``, новых пакетов не требуется
+(pmdarima-обёртка ``sktime.forecasting.arima.AutoARIMA`` потребовала бы
+отдельную тяжёлую зависимость — ради бенчмарка не тащим). Гипотеза #75:
+на ~100 точках ARIMA-семейство проигрывает Theta/ETS — здесь она получает
+число.
+
 Состав:
 
 - :func:`theta_model` — ``ThetaForecaster(sp=12)``;
 - :func:`auto_ets` — ``AutoETS(sp=12, auto=True)`` с фиксированным
   ``random_state`` и ``n_jobs=1`` (детерминированность сетки спецификаций);
+- :func:`auto_arima` — ``StatsForecastAutoARIMA(sp=12)`` (бенчмарк #75);
 - :func:`ets_full_series_structure` — какая структура ETS выбрана
   AutoETS(auto=True) на полном ряду;
-- :func:`evaluate_models` — обе модели и наивный бейзлайн на ОДНИХ фолдах,
+- :func:`evaluate_models` — все модели и наивный бейзлайн на ОДНИХ фолдах,
   MASE по каждому фолду + медиана.
 """
 
@@ -35,6 +45,7 @@ from collections.abc import Callable
 import pandas as pd
 from sktime.forecasting.base import BaseForecaster
 from sktime.forecasting.ets import AutoETS
+from sktime.forecasting.statsforecast import StatsForecastAutoARIMA
 from sktime.forecasting.theta import ThetaForecaster
 from sktime.split import ExpandingWindowSplitter
 
@@ -132,14 +143,29 @@ def evaluate_models(
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def auto_arima() -> StatsForecastAutoARIMA:
+    """``StatsForecastAutoARIMA(sp=12)`` — бенчмарк, НЕ кандидат в прод (#75).
+
+    sktime-обёртка над ``statsforecast.models.AutoARIMA`` (порт Hyndman
+    ``forecast::auto.arima``): stepwise-поиск порядка по AICc. Именно эта
+    обёртка, а не ``sktime.forecasting.arima.AutoARIMA``: последняя требует
+    ``pmdarima`` — отдельную тяжёлую зависимость, которую ради одного
+    бенчмарка не тащим; ``statsforecast`` уже закреплён в проекте.
+    """
+
+    return StatsForecastAutoARIMA(sp=SP)
+
+
 MODEL_FACTORIES = {
     "seasonal_naive": seasonal_naive,
     "theta": theta_model,
     "auto_ets": auto_ets,
+    "auto_arima": auto_arima,
 }
 
 __all__ = [
     "RANDOM_STATE",
+    "auto_arima",
     "auto_ets",
     "ets_full_series_structure",
     "evaluate_models",

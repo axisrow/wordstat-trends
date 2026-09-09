@@ -1,4 +1,4 @@
-"""Тесты ThetaForecaster и AutoETS поверх каркаса валидации (issue #74)."""
+"""Тесты моделей поверх каркаса валидации: Theta, AutoETS (#74), AutoARIMA (#75)."""
 
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +16,7 @@ from wordstat_trends.forecasting.baseline import (
     to_monthly_series,
 )
 from wordstat_trends.forecasting.models import (
+    auto_arima,
     auto_ets,
     ets_full_series_structure,
     evaluate_models,
@@ -59,9 +60,10 @@ def y(tmp_path) -> pd.Series:
 
 
 def test_evaluate_models_runs_all_through_framework(y):
-    # Обе модели + бейзлайн через ОДИН каркас: те же фолды, тот же MASE.
+    # Все модели + бейзлайн через ОДИН каркас: те же фолды, тот же MASE.
+    # auto_arima — бенчмарк #75, идёт последним (не кандидат в прод).
     report = evaluate_models(y)
-    assert list(report.index) == ["seasonal_naive", "theta", "auto_ets"]
+    assert list(report.index) == ["seasonal_naive", "theta", "auto_ets", "auto_arima"]
     fold_cols = [c for c in report.columns if c.startswith("fold_")]
     # 104 точки → те же 2 фолда, что у бейзлайна в test_forecasting_baseline.
     assert len(fold_cols) == 2
@@ -95,11 +97,22 @@ def test_theta_forecast_matches_framework_geometry(y):
 
 def test_models_deterministic(y):
     # Два прогона каждой модели через каркас дают побитово одинаковый MASE
-    # (random_state зафиксирован; Theta детерминирован по построению).
-    for fc in (theta_model(), auto_ets()):
+    # (random_state зафиксирован; Theta детерминирован по построению;
+    # StatsForecastAutoARIMA — stepwise-поиск без стохастики).
+    for fc in (theta_model(), auto_ets(), auto_arima()):
         first = evaluate_forecaster(fc, y)["test_MeanAbsoluteScaledError"].tolist()
         second = evaluate_forecaster(fc, y)["test_MeanAbsoluteScaledError"].tolist()
         assert first == second
+
+
+def test_auto_arima_forecast_matches_framework_geometry(y):
+    # Ручной прогон AutoARIMA (бенчмарк #75) без каркаса даёт конечный
+    # прогноз на те же 12 точек — та же геометрия fh, что у сплиттера.
+    fc = auto_arima()
+    fc.fit(y.iloc[:INITIAL_WINDOW])
+    pred = fc.predict(list(range(1, 13)))
+    assert pred is not None and len(pred) == 12
+    assert np.all(np.isfinite(pred.to_numpy()))
 
 
 def test_ets_full_series_structure_pinned(y):
