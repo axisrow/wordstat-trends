@@ -92,3 +92,8 @@ main { padding: 1.5rem 0; }
   overflow: hidden;
   clip: rect(0 0 0 0);
 }
+/* Секции классов трендов на главной (issue #104) */
+.trend-section { margin-top: 2rem; }
+.trend-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+.trend-list li { margin: 0.25rem 0; }
+.data-date { color: var(--muted); font-size: 0.85rem; }
