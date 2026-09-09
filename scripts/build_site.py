@@ -6,7 +6,8 @@
 Критерий приёмки issue #21: строку интерфейса нельзя добавить в обход
 механизма локализации. Его обеспечивает `lint_templates`:
   1) буквальный текст в текстовых узлах шаблона — ошибка сборки;
-  2) буквальный текст в атрибутах title/alt/aria-label/placeholder — ошибка;
+  2) буквальный текст в любом неструктурном атрибуте (title, alt, aria-label,
+     data-*, ...) — ошибка; структурные атрибуты — allow-list STRUCTURAL_ATTRS;
   3) ключ, отсутствующий в любой из локалей, — ошибка;
   4) неизвестный ключ в шаблоне (опечатка) — ошибка.
 Запуск: `python scripts/build_site.py [выходной-каталог]` (по умолчанию _site).
@@ -45,7 +46,14 @@ PAGES: dict[str, tuple[str, str]] = {
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 # Буквы любого алфавита (включая CJK) — то, что нельзя писать в шаблоне напрямую.
 LETTER_RE = re.compile(r"[\w]", re.UNICODE)
-TEXT_ATTRS = ("title", "alt", "aria-label", "placeholder")
+# Структурные атрибуты: их значения содержат буквы по смыслу (URL, классы,
+# роли) и переводом не являются. Всё, чего нет в списке, обязано быть либо
+# плейсхолдером, либо не содержать букв — иначе строку можно протащить мимо
+# механизма локализации (например, через data-*).
+STRUCTURAL_ATTRS = frozenset({
+    "href", "class", "id", "lang", "rel", "scope", "role", "charset",
+    "type", "name", "media", "http-equiv", "aria-current",
+})
 
 
 class BuildError(Exception):
@@ -74,13 +82,23 @@ def lint_templates() -> None:
     """Гейт «ни одной строки текста напрямую в шаблоне».
 
     Работает по исходникам шаблонов, до подстановки: если в текстовом узле
-    или текстовом атрибуте останется буква (кириллица, латиница, CJK) вне
-    плейсхолдера {{ключ}} — сборка падает с указанием файла и фрагмента.
+    или в любом НЕ структурном атрибуте (title, alt, data-*, ...) останется
+    буква (кириллица, латиница, CJK) вне плейсхолдера {{ключ}} — сборка
+    падает с указанием файла и атрибута. Структурные атрибуты (href, class,
+    lang, ...) проверяются по allow-list STRUCTURAL_ATTRS: расширять его
+    нужно осознанно, новый текстовый атрибут в него не добавляется.
     """
     for path in sorted(TEMPLATES_DIR.glob("*.html")):
         src = path.read_text(encoding="utf-8")
-        for attr in TEXT_ATTRS:
-            for value in re.findall(rf'{attr}="([^"]*)"', src):
+        for tag in re.findall(r"<[a-zA-Z][^>]*>", src):
+            for attr, value in re.findall(r'([a-zA-Z-]+)="([^"]*)"', tag):
+                if attr in STRUCTURAL_ATTRS:
+                    continue
+                # content= мета-вьюпорта — конфигурация браузера («width=device-
+                # width, initial-scale=1»), не текст. content= описания страницы
+                # остаётся под гейтом и обязан быть плейсхолдером.
+                if attr == "content" and "name=\"viewport\"" in tag:
+                    continue
                 stripped = PLACEHOLDER_RE.sub("", value)
                 if LETTER_RE.search(stripped):
                     raise BuildError(f"{path.name}: буквальный текст в атрибуте {attr}: {value!r}")

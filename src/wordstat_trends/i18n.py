@@ -67,7 +67,7 @@ def format_share(value: float, locale: Locale | str = Locale.RU) -> str:
     """
     locale = normalize_locale(str(locale))
     if locale is Locale.ZH:
-        return f"{value:.4f}".replace(",", ".") + "%"
+        return f"{value:.4f}" + "%"
     return f"{value:.4f}".replace(".", ",") + " %"
 
 

@@ -54,6 +54,15 @@ def test_lint_rejects_literal_text_in_attribute(tmp_path, monkeypatch):
         build_site.lint_templates()
 
 
+def test_lint_rejects_literal_text_in_arbitrary_attribute(tmp_path, monkeypatch):
+    # data-* и прочие атрибуты вне allow-list — тоже гейт, не только title/alt.
+    bad = tmp_path / "evil.html"
+    bad.write_text('<span data-label="Подпись">{{nav.index}}</span>', encoding="utf-8")
+    monkeypatch.setattr(build_site, "TEMPLATES_DIR", tmp_path)
+    with pytest.raises(build_site.BuildError, match="в атрибуте data-label"):
+        build_site.lint_templates()
+
+
 def test_unknown_key_fails_build():
     unknown = "{{nav.nowhere}}"
     with pytest.raises(build_site.BuildError, match="неизвестный ключ"):
