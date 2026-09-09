@@ -46,5 +46,6 @@
   "explain.falling": "в {ratio} раза реже прогноза",
   "explain.stable": "стабильный спрос",
   "trend.why": "Почему в списке",
+  "trend.phrase.untranslated": "(нет перевода)",
   "trend.chart.caption": "График истории запросов по месяцам; выделены последние месяцы — окно скоринга"
 }
