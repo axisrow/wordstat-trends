@@ -1,4 +1,4 @@
-"""Сериализация витрины для сборки сайта (issue #104, фаза 5).
+"""Сериализация витрины для сборки сайта (issue #104, фаза 5; ряд — #105, ниши — #106).
 
 Граница по образцу ``short_term.py`` / ``ranking.py``: ядро выдаёт структуру
 данных, рендер — фаза витрины. ``rank_showcase`` (#85) отдаёт
@@ -13,18 +13,31 @@
     {
       "schema": "showcase/v2",
       "generated_at": "2026-09-09",
+      "niches": [
+        {"topic": "...", "class": "GROWING", "score": 0.55,
+         "phrases": [{"phrase": "...", "rank": 1}]}
+      ],
       "phrases": [
         {"phrase": "...", "class": "GROWING", "rank": 1,
          "score": 0.62,
          "components": {"anomaly": ..., "volume": ..., "freshness": ...,
-                        "growth_age_months": ...}}
+                        "growth_age_months": ...},
+         "ratio": 2.0,
+         "window_months": 3,
+         "series": {"periods": ["2024-01", ...], "values": [101, ...]}}
       ]
     }
 
 ``class`` — имя члена :class:`TrendClass` (стабильный машинный ключ, не
 русская отображаемая строка: витрина переводит класс ключом локали).
 ``components`` — ``None`` вне класса «растёт» (как в :class:`RankedPhrase`).
-Ряд истории и окно скоринга в артефакт не входят — это #105.
+
+Ряд истории и окно скоринга (issue #105): ``ratio`` — отношение
+факт/прогноз из :class:`GrowthScore` (в ``RankedPhrase`` попадает только
+взвешенный скор витрины), ``series`` — месячный ряд целиком: витрина
+показывает и историю, и окно скоринга (``window_months`` последних точек).
+Читается и v1 (без ряда — карточки без графика и объяснения), пишется
+только v2.
 
 Ниши (issue #106, формулы предрегистрированы в docs/TRENDS.md): ниша =
 кластер `Cluster` + доминирующий класс состава + агрегированный скор.
@@ -32,21 +45,9 @@
 сборка сайта в Actions не касается extra `nlp` (выбор зафиксирован в
 issue-комментарии #106). Продакшн-пути, который прогоняет кластеризацию
 и пишет непустые ``niches`` (CLI/пайплайн сбора), в репо пока нет —
-встраывание в конвейер артефакта относится к эпику #14; сейчас артефакт
+встраивание в конвейер артефакта относится к эпику #14; сейчас артефакт
 с ``niches`` получается только прямыми вызовами (тесты). ``niches`` — всегда список (может быть пустым:
 кластеризация не нашла ни одной фразы с лексическими токенами).
-
-Артефакт дополняется секцией (schema ``showcase/v2``):
-
-.. code-block:: json
-
-    {
-      "schema": "showcase/v2",
-      "niches": [
-        {"topic": "...", "class": "GROWING", "score": 0.55,
-         "phrases": [{"phrase": "...", "rank": 1}]}
-      ]
-    }
 """
 
 from __future__ import annotations
@@ -58,9 +59,19 @@ from datetime import date
 from pathlib import Path
 
 from wordstat_trends.nlp.clustering import ClusteringResult
-from wordstat_trends.trends.ranking import CLASS_ORDER, RankedPhrase, TrendClass
+from wordstat_trends.trends.ranking import (
+    CLASS_ORDER,
+    PhraseRecord,
+    RankedPhrase,
+    TrendClass,
+    rank_showcase,
+)
 
 SCHEMA = "showcase/v2"
+
+#: Схемы, которые читает `load_showcase`: v1 не содержит ряда и ratio —
+#: витрина собирается, но без графиков и объяснений.
+READABLE_SCHEMAS = frozenset({"showcase/v1", SCHEMA})
 
 #: Сколько фраз состава ниши показывать на витрине (ссылки на карточки).
 NICHE_TOP_PHRASES = 5
@@ -127,15 +138,24 @@ def build_niches(ranked: list[RankedPhrase], result: ClusteringResult) -> list[N
 
 
 def serialize_showcase(
-    ranked: list[RankedPhrase], generated_at: date | None = None, *, result: ClusteringResult | None = None
+    records: list[PhraseRecord],
+    generated_at: date | None = None,
+    *,
+    result: ClusteringResult | None = None,
 ) -> dict:
-    """Отранжированная витрина (+ результат кластеризации) → словарь артефакта.
+    """Записи фраз (+ результат кластеризации) → словарь артефакта.
 
-    ``result`` keyword-only: третий позиционный аргумент исторически был
-    ``generated_at``, и позиционный вызов со старой сигнатурой молча скормил
-    бы ``date`` в ``build_niches`` с невнятным AttributeError.
+    Ранжирование — внутри: серии живут в :class:`PhraseRecord`, а не в
+    :class:`RankedPhrase`, поэтому на вход принимаются записи (как в
+    ``rank_showcase``); отфильтрованные ступенью отсева (#84) не попадают
+    в витрину. ``result`` keyword-only: третий позиционный аргумент
+    исторически был ``generated_at``, и позиционный вызов со старой
+    сигнатурой молча скормил бы ``date`` в ``build_niches`` с невнятным
+    AttributeError.
     """
 
+    ranked = rank_showcase(records)
+    by_phrase = {record.phrase: record for record in records}
     niches = build_niches(ranked, result) if result is not None else []
     return {
         "schema": SCHEMA,
@@ -168,6 +188,15 @@ def serialize_showcase(
                     if row.components is not None
                     else None
                 ),
+                "ratio": round(float(by_phrase[row.phrase].growth.score), 6),
+                "window_months": len(by_phrase[row.phrase].growth.actual),
+                "series": {
+                    "periods": [str(p) for p in by_phrase[row.phrase].series.index],
+                    "values": [
+                        int(v) if float(v).is_integer() else round(float(v), 3)
+                        for v in by_phrase[row.phrase].series
+                    ],
+                },
             }
             for row in ranked
         ],
@@ -175,7 +204,7 @@ def serialize_showcase(
 
 
 def save_showcase(
-    ranked: list[RankedPhrase],
+    records: list[PhraseRecord],
     path: Path | str,
     generated_at: date | None = None,
     *,
@@ -187,7 +216,7 @@ def save_showcase(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(
-            serialize_showcase(ranked, generated_at, result=result), ensure_ascii=False, indent=2
+            serialize_showcase(records, generated_at, result=result), ensure_ascii=False, indent=2
         ),
         encoding="utf-8",
     )
@@ -195,11 +224,18 @@ def save_showcase(
 
 
 def load_showcase(path: Path | str) -> dict:
-    """Файл артефакта → словарь; схема и структура проверяются, не молча."""
+    """Файл артефакта → словарь; схема и структура проверяются, не молча.
+
+    v1 читается для обратной совместимости (карточки без ряда); всё, что
+    не v1/v2, — ошибка: молча показать пустое состояние поверх
+    существующих данных хуже громкого отказа.
+    """
 
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        raise ShowcaseError(f"не артефакт витрины (ожидалась схема {SCHEMA})")
+    if not isinstance(data, dict) or data.get("schema") not in READABLE_SCHEMAS:
+        raise ShowcaseError(
+            f"не артефакт витрины (ожидается одна из схем {sorted(READABLE_SCHEMAS)})"
+        )
     phrases = data.get("phrases")
     if not isinstance(phrases, list):
         raise ShowcaseError("артефакт без списка phrases")
@@ -212,6 +248,7 @@ def load_showcase(path: Path | str) -> dict:
 __all__ = [
     "NICHE_TOP_PHRASES",
     "Niche",
+    "READABLE_SCHEMAS",
     "SCHEMA",
     "ShowcaseError",
     "build_niches",

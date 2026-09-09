@@ -79,6 +79,28 @@ main { padding: 1.5rem 0; }
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
+/* Карточки трендов (issue #105) */
+.trend-cards { margin-top: 0.5rem; }
+.trend-card {
+  padding: 1rem 1.25rem;
+  margin-top: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.trend-heading { margin: 0; font-size: 1.1rem; }
+.trend-rank { color: var(--muted); font-weight: 400; }
+.trend-meta { margin: 0.25rem 0 0.75rem; font-size: 0.9rem; }
+.trend-class { color: var(--accent); }
+.trend-score { color: var(--muted); }
+.trend-figure { margin: 0; }
+.trend-chart { width: 100%; height: auto; }
+.chart-axis { stroke: var(--border); stroke-width: 1; }
+.chart-history { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.chart-window { stroke: var(--accent); stroke-width: 2.5; fill: none; }
+.chart-dot { fill: var(--accent); }
+.chart-label { fill: var(--muted); font-size: 12px; }
+.chart-label-end { text-anchor: end; }
+.trend-explain { margin: 0.75rem 0 0; font-size: 0.9rem; }
 .site-footer {
   padding-top: 1rem;
   border-top: 1px solid var(--border);

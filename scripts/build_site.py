@@ -7,6 +7,14 @@
 ``showcase/v2``, пишется ядром ``wordstat_trends.showcase``). Сборка читает
 его сама (json, не пакет: артефакт пишется в CI без зависимостей проекта);
 отсутствие или пустота артефакта — пустое состояние, не ошибка (#21 п.7).
+Читается и v1 — карточки без графика и объяснения (ряд появился в v2, #105).
+
+Карточки трендов (issue #105): заголовок-фраза, класс, скор, график истории
+(inline SVG, генерируется здесь — статика без JS и внешних библиотек:
+ограничение Pages-сборки ``uv run --no-project``) и объяснение «почему фраза
+в списке» — шаблоны ``explain.*`` локалей с подстановкой чисел тем же
+механизмом, что в ``wordstat_trends.explain`` (#20; сам модуль ядру здесь
+недоступен — тянет pandas).
 
 Критерий приёмки issue #21: строку интерфейса нельзя добавить в обход
 механизма локализации. Его обеспечивает `lint_templates`:
@@ -41,6 +49,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from wordstat_trends.i18n import (  # noqa: E402
     DEFAULT_LOCALE,
     format_date,
+    format_month,
+    format_number,
+    format_ratio,
     format_score,
 )
 
@@ -62,6 +73,10 @@ DEFAULT_ARTIFACT_PATH = SITE_DATA_DIR / "showcase.json"
 #: обязана идти на голом stdlib (CI без зависимостей проекта).
 SHOWCASE_SCHEMA = "showcase/v2"
 
+#: Читаемые схемы: v1 (#104) не содержит ряда и ratio — карточки без
+#: графика и объяснения (расширение сериализации — #105).
+READABLE_SCHEMAS = frozenset({"showcase/v1", SHOWCASE_SCHEMA})
+
 #: Сколько фраз каждой секции показывать на главной: тренды — сразу
 #: (эпик #1), без прокрутки простыня всех классов; полная таблица — на
 #: странице трендов.
@@ -74,6 +89,25 @@ SECTION_KEYS: dict[str, str] = {
     "SEASONAL": "trends.class.seasonal",
     "FALLING": "trends.class.falling",
     "STABLE": "trends.class.stable",
+}
+
+#: Метка класса в карточке («растёт», не заголовок секции «Растущие
+#: запросы») — ключи локали из #20.
+CARD_CLASS_KEYS: dict[str, str] = {
+    "GROWING": "trend.class.growing",
+    "SEASONAL": "trend.class.seasonal",
+    "FALLING": "trend.class.falling",
+    "STABLE": "trend.class.stable",
+}
+
+#: Шаблон объяснения «почему в списке» по классу — те же ключи локалей,
+#: что в wordstat_trends.explain (#20): {ratio} и {months} подставляются
+#: числами, отформатированными по локали.
+EXPLAIN_KEYS: dict[str, str] = {
+    "GROWING": "explain.growing",
+    "SEASONAL": "explain.seasonal",
+    "FALLING": "explain.falling",
+    "STABLE": "explain.stable",
 }
 
 BASE_URL = "https://axisrow.github.io/wordstat-trends"
@@ -167,19 +201,14 @@ def load_artifact(path: Path | str | None) -> dict | None:
     if not Path(path).exists():
         return None
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("schema") != SHOWCASE_SCHEMA:
-        raise BuildError(f"{path}: не артефакт витрины (ожидалась схема {SHOWCASE_SCHEMA})")
+    if not isinstance(data, dict) or data.get("schema") not in READABLE_SCHEMAS:
+        raise BuildError(
+            f"{path}: не артефакт витрины (ожидается одна из схем {sorted(READABLE_SCHEMAS)})"
+        )
     phrases = data.get("phrases")
     if not isinstance(phrases, list):
         raise BuildError(f"{path}: артефакт без списка phrases")
     return data if phrases else None
-
-
-def _class_label(klass: str, messages: dict[str, str]) -> str:
-    key = SECTION_KEYS.get(klass)
-    if key is None:
-        raise BuildError(f"неизвестный класс фразы в артефакте: {klass!r}")
-    return messages[key]
 
 
 def escape_data(value: object) -> str:
@@ -257,7 +286,7 @@ def render_niche_section(artifact: dict) -> str:
 def render_trends_body(
     artifact: dict | None, messages: dict[str, str], code: str
 ) -> str:
-    """Тело страницы трендов: пустое состояние или таблица полной витрины."""
+    """Тело страницы трендов: пустое состояние или карточки витрины (#105)."""
 
     if not artifact:
 
@@ -276,30 +305,161 @@ def render_trends_body(
             f'<p class="data-date">{{{{trends.generated}}}} '
             f"{format_date(day, code)}</p>"
         )
-    rows = []
-    phrases = artifact["phrases"]
-    for p in phrases:
-        phrase = escape_data(p["phrase"])
-        klass = html.escape(_class_label(str(p["class"]), messages))
-        rank = escape_data(p["rank"])
-        score = format_score(float(p["score"]), code) if p.get("components") else "—"
-        rows.append(
-            f'<tr id="phrase-{html.escape(str(p["rank"]), quote=True)}">'
-            f"<td>{rank}</td><td>{phrase}</td><td>{klass}</td><td>{score}</td></tr>"
-        )
-    body = "\n".join(rows)
+    cards = "\n".join(
+        render_trend_card(p, messages, code) for p in artifact["phrases"]
+    )
+    return f"{data_note}\n<div class=\"trend-cards\">\n{cards}\n</div>"
+
+
+def render_trend_card(p: dict, messages: dict[str, str], code: str) -> str:
+    """Карточка тренда: фраза, класс, скор, график истории, объяснение.
+
+    График и объяснение — только в v2-артефакте (есть ``series`` и
+    ``ratio``); карточка из v1 собирается без них. ``id="phrase-N"`` —
+    якорь, на который ссылаются ниши главной (#106, раньше — строки
+    таблицы трендов).
+    """
+
+    phrase = escape_data(p["phrase"])
+    klass = str(p["class"])
+    if klass not in CARD_CLASS_KEYS:
+        raise BuildError(f"неизвестный класс фразы в артефакте: {klass!r}")
+    rank = escape_data(p["rank"])
+    anchor = html.escape(str(p["rank"]), quote=True)
+    score = format_score(float(p["score"]), code) if p.get("components") else "—"
+    chart = render_series_svg(p.get("series"), p.get("window_months", 0), code)
+    explain = render_explanation(p, messages, code)
     return (
-        f"{data_note}\n"
-        '<table class="trends-table">\n'
-        '<caption class="visually-hidden">{{trends.title}}</caption>\n'
-        "<thead>\n<tr>\n"
-        '<th scope="col">{{trends.col.rank}}</th>\n'
-        '<th scope="col">{{trends.col.phrase}}</th>\n'
-        '<th scope="col">{{trends.col.class}}</th>\n'
-        '<th scope="col">{{trends.col.score}}</th>\n'
-        "</tr>\n</thead>\n"
-        f"<tbody>\n{body}\n</tbody>\n"
-        "</table>"
+        f'<article class="trend-card" id="phrase-{anchor}">\n'
+        f'<h2 class="trend-heading"><span class="trend-rank">{{{{trends.col.rank}}}} '
+        f"{rank}</span> {phrase}</h2>\n"
+        f'<p class="trend-meta"><span class="trend-class">{{{{{CARD_CLASS_KEYS[klass]}}}}}'
+        f'</span> · <span class="trend-score">{{{{trends.col.score}}}}: {score}</span></p>\n'
+        f"{chart}"
+        f"{explain}"
+        "</article>"
+    )
+
+
+#: Геометрия графика истории (issue #105): viewBox фиксирован, ширина —
+#: 100% через CSS; подписи — данные (числа/месяцы по локале), не текст
+#: интерфейса — текст интерфейса здесь только {{trend.chart.caption}}.
+_CHART_W, _CHART_H = 600, 200
+_CHART_PAD_X, _CHART_PAD_TOP, _CHART_PAD_BOTTOM = 10, 18, 30
+
+
+def chart_points(values: list[float], width: int = _CHART_W, height: int = _CHART_H) -> list[tuple[float, float]]:
+    """Значения ряда → координаты точек SVG: x равномерно по месяцам,
+    y — от нуля до максимума ряда (график частот честен базовой линией).
+
+    Отдельная чистая функция: тест проверяет соответствие точек ряду по
+    ней, а не разбором готового SVG на глаз.
+    """
+
+    n = len(values)
+    if n == 0:
+        return []
+    top = max(float(v) for v in values)
+    if top <= 0:
+        top = 1.0
+    plot_w = width - 2 * _CHART_PAD_X
+    plot_h = height - _CHART_PAD_TOP - _CHART_PAD_BOTTOM
+    step = plot_w / (n - 1) if n > 1 else 0.0
+    return [
+        (
+            _CHART_PAD_X + i * step,
+            _CHART_PAD_TOP + plot_h * (1.0 - float(v) / top),
+        )
+        for i, v in enumerate(values)
+    ]
+
+
+def _period_date(period: str) -> date:
+    year, month = period.split("-")[:2]
+    return date(int(year), int(month), 1)
+
+
+def render_series_svg(
+    series: dict | None, window_months: int, code: str
+) -> str:
+    """Месячный ряд → inline SVG: история + выделенное окно скоринга.
+
+    Статика без JS и внешних библиотек (ограничение Pages-сборки из #21:
+    ``uv run --no-project``). Ось Y — от нуля, подписи краёв оси X и
+    максимума — форматтеры ``wordstat_trends.i18n`` по локали; цвета —
+    только через CSS-классы (светлая/тёмная темы сайта), не атрибуты.
+    ``series=None`` (v1-артефакт) — пустая строка, карточка без графика.
+    """
+
+    if not series:
+        return ""
+    # Битый ряд — BuildError, а не сырой KeyError/ValueError: тот же
+    # контракт, что у load_artifact (испорченный артефакт — громкий отказ).
+    try:
+        values = [float(v) for v in series["values"]]
+        periods = [str(p) for p in series["periods"]]
+        edge_months = [_period_date(p) for p in (periods[0], periods[-1])]
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise BuildError(f"ряд истории в артефакте битый: {exc}") from exc
+    if len(values) != len(periods) or not values:
+        raise BuildError("ряд истории в артефакте битый: длины periods/values не совпадают")
+    points = chart_points(values)
+    # Окно скоринга — последние window_months точек (GrowthScore.actual).
+    window = max(0, min(int(window_months), len(points)))
+    split = len(points) - window
+    history = " ".join(f"{x:.1f},{y:.1f}" for x, y in points[: split + 1])
+    window_line = " ".join(f"{x:.1f},{y:.1f}" for x, y in points[split:])
+    dots = "".join(
+        f'<circle class="chart-dot" cx="{x:.1f}" cy="{y:.1f}" r="3"/>'
+        for x, y in points[split:]
+    )
+    top_value = max(values)
+    first_month = format_month(edge_months[0], code)
+    last_month = format_month(edge_months[1], code)
+    baseline = _CHART_H - _CHART_PAD_BOTTOM
+    return (
+        f'<figure class="trend-figure">\n'
+        f'<figcaption class="visually-hidden">{{{{trend.chart.caption}}}}</figcaption>\n'
+        f'<svg class="trend-chart" viewBox="0 0 {_CHART_W} {_CHART_H}" '
+        f'role="img" preserveAspectRatio="xMidYMid meet">\n'
+        f'<line class="chart-axis" x1="{_CHART_PAD_X}" y1="{baseline}" '
+        f'x2="{_CHART_W - _CHART_PAD_X}" y2="{baseline}"/>\n'
+        f'<polyline class="chart-history" points="{history}"/>\n'
+        f'<polyline class="chart-window" points="{window_line}"/>\n'
+        f"{dots}\n"
+        f'<text class="chart-label" x="{_CHART_PAD_X}" y="12">{escape_data(format_number(top_value, code))}</text>\n'
+        f'<text class="chart-label" x="{_CHART_PAD_X}" y="{_CHART_H - 8}">{escape_data(first_month)}</text>\n'
+        f'<text class="chart-label chart-label-end" x="{_CHART_W - _CHART_PAD_X}" '
+        f'y="{_CHART_H - 8}">{escape_data(last_month)}</text>\n'
+        f"</svg>\n"
+        f"</figure>\n"
+    )
+
+
+def render_explanation(p: dict, messages: dict[str, str], code: str) -> str:
+    """Объяснение «почему фраза в списке» (#14): шаблон класса + числа.
+
+    Подстановка — тем же контрактом, что ``wordstat_trends.explain``
+    (#20): ``{ratio}`` — отношение факт/прогноз, ``{months}`` — возраст
+    роста, оба уже отформатированы по локали; лишние параметры
+    ``str.format`` игнорирует, недостающий плейсхолдер — ошибка сборки.
+    В v1-артефакте нет ``ratio`` — объяснение опускается.
+    """
+
+    if "ratio" not in p:
+        return ""
+    klass = str(p["class"])
+    params: dict[str, str] = {"ratio": format_ratio(float(p["ratio"]), code)}
+    components = p.get("components")
+    if components:
+        params["months"] = escape_data(components.get("growth_age_months", ""))
+    try:
+        text = messages[EXPLAIN_KEYS[klass]].format(**params)
+    except KeyError as exc:
+        raise BuildError(f"шаблон объяснения {klass!r}: плейсхолдер {exc} не получил значения") from exc
+    return (
+        f'<p class="trend-explain"><strong>{{{{trend.why}}}}:</strong> '
+        f"{escape_data(text)}</p>\n"
     )
 
 
@@ -325,11 +485,11 @@ def build(
 ) -> tuple[list[Path], dict | None]:
     """Собирает страницы обеих локалей и ассеты.
 
-    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2). Возвращает
-    (страницы, артефакт): артефакт — загруженный JSON или None при
-    отсутствии/пустоте — тогда пустое состояние (сборка не падает, #21 п.7).
-    Вызывающий (main) использует его для итогового сообщения, не
-    перечитывая файл.
+    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2, читается
+    и v1 — карточки без графика и объяснения). Возвращает (страницы,
+    артефакт): артефакт — загруженный JSON или None при отсутствии/пустоте —
+    тогда пустое состояние (сборка не падает, #21 п.7). Вызывающий (main)
+    использует его для итогового сообщения, не перечитывая файл.
     """
     locales = load_locales()
     lint_templates()

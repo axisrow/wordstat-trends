@@ -172,10 +172,10 @@ def test_number_format_matches_wordstat_style():
 
 
 def _artifact_file(tmp_path) -> Path:
-    from tests.test_showcase import _ranked
+    from tests.test_showcase import _records
     from wordstat_trends.showcase import save_showcase
 
-    return save_showcase(_ranked(), tmp_path / "showcase.json", generated_at=date(2026, 9, 9))
+    return save_showcase(_records(), tmp_path / "showcase.json", generated_at=date(2026, 9, 9))
 
 
 @pytest.fixture(scope="module")
@@ -202,16 +202,16 @@ def test_index_sections_in_class_order(filled_site):
     assert page.index("Растущие запросы") < page.index("Сезонное")
 
 
-def test_trends_table_renders_artifact(filled_site):
+def test_trends_cards_render_artifact(filled_site):
     page = filled_site["trends.html"]
     assert "новогодние подарки" in page
-    assert "Запрос" in page and "Скор" in page
+    assert "Скор" in page
     assert "Данные от" in page and "9 сентября 2026 г." in page
     zh = filled_site["zh/trends.html"]
     assert "数据截至" in zh and "2026年9月9日" in zh
 
 
-def test_trends_table_score_localized(filled_site):
+def test_trends_card_score_localized(filled_site):
     # ru: десятичная запятая; zh: точка (i18n-формат чисел, #21 п.6)
     assert "," in filled_site["trends.html"].split("Скор", 1)[1][:400]
     zh_tail = filled_site["zh/trends.html"].split("评分", 1)[1][:400]
@@ -220,7 +220,7 @@ def test_trends_table_score_localized(filled_site):
 
 def test_trends_non_growing_score_is_dash(filled_site):
     # вне «растёт» скора нет — тире, а не 0,00 (объяснимость, #85)
-    assert "<td>—</td>" in filled_site["trends.html"]
+    assert "Скор: —" in filled_site["trends.html"]
 
 
 def test_phrase_html_escaped(tmp_path):
