@@ -178,6 +178,32 @@ class TestDegenerateInputs:
         assert result.n_clusters == 1
         assert result.clusters[0].phrases == ["купить телефон", "курсы английского"]
 
+    def test_identical_phrases_single_cluster(self):
+        # одинаковые признаки: k-means может вернуть <2 уникальных меток,
+        # силуэт не определён — это один кластер, а не ValueError
+        result = cluster_phrases(["курсы английского"] * 5, pipeline="tfidf")
+        assert result.n_phrases == 5
+        assert result.n_clusters == 1
+        assert result.clusters[0].phrases == ["курсы английского"] * 5
+        assert result.silhouette is None
+
+    def test_identical_phrases_berta_fake(self, fake_model):
+        result = cluster_phrases(["курсы английского"] * 5, pipeline="berta")
+        assert result.n_clusters == 1
+        assert result.silhouette is None
+
+    def test_phrases_without_lemmas_excluded(self):
+        # цифры/пунктуация: лемматизация пуста — не «empty vocabulary», а фильтр
+        result = cluster_phrases(["123", "!!!", "купить телефон"], pipeline="tfidf")
+        assert result.n_phrases == 1
+        assert result.clusters[0].phrases == ["купить телефон"]
+
+    def test_all_phrases_without_lemmas_empty_result(self):
+        result = cluster_phrases(["123", "???"], pipeline="tfidf")
+        assert result.n_phrases == 0
+        assert result.n_clusters == 0
+        assert result.clusters == []
+
     def test_unknown_pipeline_rejected(self):
         with pytest.raises(ValueError, match="неизвестный конвейер"):
             cluster_phrases(FIXTURE_PHRASES, pipeline="fasttext")  # type: ignore[arg-type]

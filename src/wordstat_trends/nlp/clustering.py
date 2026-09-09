@@ -85,25 +85,33 @@ def cluster_phrases(
     Одинаковый k-means и подбор k по силуэту для обоих представлений;
     метки-тем из топ-лемм состава — независимо от конвейера (у BERTA
     представление не в пространстве лемм, см. ISSUE_13_TFIDF_VS_BERTA.md).
-    """
-    if not phrases:
-        return ClusteringResult(pipeline=pipeline, n_phrases=0, n_clusters=0, silhouette=None)
 
-    lemmatized = [" ".join(lemmatize(phrase)) for phrase in phrases]
+    Контракт по пустым фразам: фразы без лексических токенов (одни цифры/
+    пунктуация — лемматизация даёт пустую строку) в кластеризацию не
+    попадают и в результат не входят: им нечего представлять ни в одном
+    конвейере (TF-IDF дал бы пустой словарь, BERTA — шумовой вектор).
+    `n_phrases` в результате — число кластеризованных фраз.
+    """
+    pairs = [(phrase, " ".join(lemmatize(phrase))) for phrase in phrases]
+    pairs = [(phrase, lemma) for phrase, lemma in pairs if lemma]
+    if not pairs:
+        return ClusteringResult(pipeline=pipeline, n_phrases=0, n_clusters=0, silhouette=None)
+    phrases, lemmatized = [pair[0] for pair in pairs], [pair[1] for pair in pairs]
+
+    if pipeline not in ("berta", "tfidf"):
+        raise ValueError(f"неизвестный конвейер {pipeline!r}: ожидается один из ['berta', 'tfidf']")
     if pipeline == "berta":
         features = _berta_features(lemmatized)
-    elif pipeline == "tfidf":
-        features = _tfidf_features(lemmatized)
     else:
-        raise ValueError(f"неизвестный конвейер {pipeline!r}: ожидается один из ['berta', 'tfidf']")
+        features = _tfidf_features(lemmatized)
 
-    labels = _best_kmeans_labels(features, k_grid, seed)
+    labels, silhouette = _best_kmeans_labels(features, k_grid, seed)
     clusters = _build_clusters(phrases, lemmatized, labels)
     return ClusteringResult(
         pipeline=pipeline,
         n_phrases=len(phrases),
         n_clusters=len(clusters),
-        silhouette=_silhouette(features, labels),
+        silhouette=silhouette,
         clusters=clusters,
     )
 
@@ -131,34 +139,33 @@ def _tfidf_features(lemmatized: list[str]):
     return vectorizer.fit_transform(lemmatized)
 
 
-def _best_kmeans_labels(features, k_grid: tuple[int, ...], seed: int) -> np.ndarray:
-    """k-means для каждого валидного k из сетки, итог — метки лучшего по силуэту.
+def _best_kmeans_labels(features, k_grid: tuple[int, ...], seed: int) -> tuple[np.ndarray, float | None]:
+    """k-means для каждого валидного k из сетки; итог — метки лучшего по силуэту и сам силуэт.
 
     Детерминизм: один seed (по умолчанию фиксированный SEED), n_init=10,
     tie-break — минимальный k (первый максимум в порядке возрастания сетки).
     Вырожденные входы (меньше трёх фраз, пустая после обрезки сетка, все
-    признаки совпадают) честно дают один кластер — это не ошибка.
+    признаки совпадают) честно дают один кластер — это не ошибка; силуэт
+    при этом не определён (None).
+
+    k с выродившимся разбиением (k-means вернул меньше двух уникальных
+    меток — например, на полностью совпадающих признаках) пропускается:
+    silhouette_score требует 2 <= n_labels.
     """
     n = features.shape[0]
-    valid = sorted({k for k in k_grid if 2 <= k <= n - 1})
-    if not valid:
-        return np.zeros(n, dtype=int)
-
     best_labels = np.zeros(n, dtype=int)
-    best_score = -np.inf
-    for k in valid:
+    best_score: float | None = None
+
+    for k in sorted({k for k in k_grid if 2 <= k <= n - 1}):
         labels = KMeans(n_clusters=k, random_state=seed, n_init=10).fit_predict(features)
-        score = silhouette_score(features, labels)
-        if score > best_score:  # строго больше: при равенстве остаётся меньший k
+        if len(set(labels.tolist())) < 2:
+            continue
+        score = float(silhouette_score(features, labels))
+        # строго больше: при равенстве остаётся меньший k; первый k всегда
+        # берётся (best_score=None), чтобы пустой по силуэту перебор не вернул None
+        if best_score is None or score > best_score:
             best_score, best_labels = score, labels
-    return best_labels
-
-
-def _silhouette(features, labels: np.ndarray) -> float | None:
-    """Силуэт итогового разбиения; None, если разбиение вырождено (k=1)."""
-    if len(set(labels.tolist())) < 2:
-        return None
-    return float(silhouette_score(features, labels))
+    return best_labels, best_score
 
 
 def _build_clusters(phrases: list[str], lemmatized: list[str], labels: np.ndarray) -> list[Cluster]:
