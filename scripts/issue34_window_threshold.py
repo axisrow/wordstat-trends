@@ -64,6 +64,8 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
 import numpy as np
 import pandas as pd
 
+from wordstat_trends.run_meta import run_metadata
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
@@ -219,6 +221,9 @@ def calibration_synth() -> dict:
 
 def main() -> int:
     report: dict = {
+        # seed=0: исторический seed калибровочной синусоиды (calibration_synth),
+        # см. аудит в wordstat_trends/seeds.py
+        "run": run_metadata(inputs=tuple(FIXTURES.values()), seed=0),
         "sp": SP,
         "windows": WINDOWS,
         "anchor": "все окна заканчиваются конечной датой базового 56-дневного отрезка (суффиксы)",

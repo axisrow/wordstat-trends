@@ -55,11 +55,13 @@ from wordstat_trends.forecasting.baseline import (
     make_expanding_splitter,
     seasonal_naive,
 )
+from wordstat_trends.seeds import DEFAULT_SEED
 
 #: Фиксированный seed для моделей, где есть стохастика (init-розыгрыш
 #: AutoETS). ThetaForecaster стохастики не имеет и детерминирован по
-#: построению — seed там неприменим.
-RANDOM_STATE = 42
+#: построению — seed там неприменим. Значение — из seed-политики проекта
+#: (wordstat_trends.seeds, аудит всех мест стохастики — там же, issue #95).
+RANDOM_STATE = DEFAULT_SEED
 
 #: Порядок моделей в отчёте :func:`evaluate_models`: бейзлайн первым —
 #: с ним сравниваются остальные. Определяется лениво (после фабрик), см.
