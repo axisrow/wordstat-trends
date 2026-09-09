@@ -401,7 +401,10 @@ def main(argv: list[str]) -> int:
     except BuildError as exc:
         print(f"ошибка сборки: {exc}", file=sys.stderr)
         return 1
-    source = f" из {args.artifact}" if args.artifact else ""
+    # источник печатается, только когда артефакт реально загружен: дефолтный
+    # путь задан всегда, а файла может не быть — витрина тогда пустая, и
+    # «из site_data/showcase.json» в логе вводило бы в заблуждение
+    source = f" из {args.artifact}" if load_artifact(args.artifact) else ""
     dirs = ", ".join(sorted(set(p.parent.name or "." for p in pages)))
     print(f"собрано {len(pages)} страниц ({dirs}) → {args.out_dir}/{source}")
     return 0
