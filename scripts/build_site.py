@@ -228,7 +228,7 @@ def _reassemble_fstring(node: ast.JoinedStr) -> str:
     return "".join(parts)
 
 
-def lint_fragments() -> None:
+def lint_fragments(source: str | None = None) -> None:
     """Гейт литералов HTML-фрагментов в f-строках этого файла (issue #121).
 
     Карточки, ниши и списки собираются f-строками в ``build_site.py``, а не
@@ -238,9 +238,13 @@ def lint_fragments() -> None:
     же ``_lint_html``: критерий приёмки #21 — «строку нельзя добавить в
     обход механизма» — держится проверкой, а не соглашением. Существующие
     проверки не ослабляются: правила те же, что у шаблонов.
+
+    Докстринги (``ast.Expr`` со строковым значением) под гейт не попадают:
+    пример HTML в документации — не интерфейсная строка, а падение сборки
+    на нём выглядело бы «буквальным текстом» без очевидной причины.
     """
 
-    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
     # литеральные чанки внутри f-строк walk отдаёт отдельными Constant-узлами
     # (обрезанные теги) — их проверяет родительская JoinedStr целиком
     inside_fstring = {
@@ -249,12 +253,22 @@ def lint_fragments() -> None:
         if isinstance(node, ast.JoinedStr)
         for child in node.values
     }
+    # докстринги модулей/функций/классов — Constant в позиции Expr-выражения
+    docstrings = {
+        id(stmt.value)
+        for stmt in ast.walk(tree)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+    }
     for node in ast.walk(tree):
         if not isinstance(node, (ast.JoinedStr, ast.Constant)):
             continue
         if isinstance(node, ast.JoinedStr):
             value = _reassemble_fstring(node)
-        elif id(node) in inside_fstring or not isinstance(node.value, str):
+        elif (
+            id(node) in inside_fstring
+            or id(node) in docstrings
+            or not isinstance(node.value, str)
+        ):
             continue
         else:
             value = node.value

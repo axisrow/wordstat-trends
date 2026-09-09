@@ -435,6 +435,24 @@ def test_fragment_lint_accepts_placeholders_and_data_in_fstring():
     build_site._lint_html(build_site._reassemble_fstring(node), "test")
 
 
+def test_fragment_lint_ignores_html_examples_in_docstrings():
+    # докстринг с примером HTML-тега — документация, не интерфейсная строка:
+    # гейт фрагментов не должен ронять сборку на нём (заметка ревью PR #125)
+    with_docstring = (
+        "def example():\n"
+        '    """Гейт ловит f"<p>буквальный текст</p>" — но не здесь."""\n'
+        "    return '<p>{{some.key}}</p>'\n"
+    )
+    build_site.lint_fragments(with_docstring)
+
+
+def test_fragment_lint_catches_literal_constant_outside_docstrings():
+    # та же строка кодом, не докстрингом — гейт срабатывает
+    with_literal = "frag = '<p>буквальный текст</p>'\n"
+    with pytest.raises(build_site.BuildError, match="вне механизма i18n"):
+        build_site.lint_fragments(with_literal)
+
+
 # --- кривой generated_at (issue #121) ------------------------------------------
 
 
