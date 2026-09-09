@@ -17,7 +17,7 @@ import pytest
 
 from wordstat_trends.explain import ExplainError, explain_phrase, localized_class
 from wordstat_trends.forecasting.baseline import to_monthly_series
-from wordstat_trends.i18n import format_ratio
+from wordstat_trends.i18n import format_ratio, format_score
 from wordstat_trends.loader import parse_dynamics_rows
 from wordstat_trends.trends.ranking import (
     PhraseRecord,
@@ -114,3 +114,13 @@ def test_format_ratio_locale_separators_on_real_scores():
         zh = format_ratio(growth.score, "zh")
         assert ru.replace(",", ".") == zh
         assert "," in ru or "." in ru
+
+
+def test_format_ratio_and_format_score_are_distinct_formats():
+    # Регрессия конфликта PR #108/#109 (два def format_ratio, F811):
+    # кратность «в 2,3 раза» — один знак (format_ratio), скор витрины —
+    # два знака (format_score, issue #104).
+    assert format_ratio(2.345, "ru") == "2,3"
+    assert format_ratio(2.345, "zh") == "2.3"
+    assert format_score(2.345, "ru") == "2,35"
+    assert format_score(2.345, "zh") == "2.35"

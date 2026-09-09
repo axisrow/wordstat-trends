@@ -71,8 +71,8 @@ def format_share(value: float, locale: Locale | str = Locale.RU) -> str:
     return f"{value:.4f}".replace(".", ",") + " %"
 
 
-def format_ratio(value: float, locale: Locale | str = Locale.RU) -> str:
-    """Дробное число без знака процента: скоры и кратности витрины.
+def format_score(value: float, locale: Locale | str = Locale.RU) -> str:
+    """Дробное число без знака процента: скоры витрины (issue #104).
 
     ru: 2.35 → «2,35» (десятичная запятая, как в выгрузке Вордстата);
     zh: 2.35 → «2.35». Два десятичных знака: скор витрины читается как
@@ -99,7 +99,9 @@ def format_ratio(value: float, locale: Locale | str = Locale.RU) -> str:
     Один десятичный знак — достаточная точность для подписи витрины;
     разделитель по локали: ru «2,3», zh «2.3». Значения — реальные
     ``GrowthScore.score`` из tests/fixtures (например 0.5 у падающей
-    синтетики, 2.0 у растущей), а не абстрактные примеры.
+    синтетики, 2.0 у растущей), а не абстрактные примеры. Отдельно от
+    :func:`format_score`: кратность «в 2,3 раза» — измерение, один знак;
+    скор витрины — ранжирующее число, два знака.
     """
     locale = normalize_locale(str(locale))
     rendered = f"{value:.1f}"
