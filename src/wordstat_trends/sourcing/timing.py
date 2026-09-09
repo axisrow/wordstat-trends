@@ -29,7 +29,11 @@ from dataclasses import dataclass
 import pandas as pd
 
 from wordstat_trends.forecasting.baseline import SP
-from wordstat_trends.trends.ranking import SEASONAL_MAX_MIN_RATIO, seasonal_max_min_ratio
+from wordstat_trends.trends.ranking import (
+    SEASONAL_MAX_MIN_RATIO,
+    monthly_profile,
+    seasonal_max_min_ratio,
+)
 
 #: Сроки поставки Китай → РФ по типам логистики, недели, округлённые
 #: вверх от типичных диапазонов (авиа ~2–3, ж/д ~5–7, море ~8–10).
@@ -65,18 +69,6 @@ class PurchaseWindow:
     on_time: bool  # заказ сейчас успевает к ближайшему пику
 
 
-def monthly_profile(y: pd.Series) -> pd.Series:
-    """Средние по календарным месяцам за всю историю ряда.
-
-    Тот же профиль, что внутри :func:`seasonal_max_min_ratio` (#85):
-    усреднение по годам сглаживает разовые всплески, остаётся устойчивая
-    сезонная компонента. Индекс результата — номер месяца 1..12.
-    """
-
-    month_means = y.groupby(pd.PeriodIndex(y.index).month).mean().astype(float)
-    return month_means
-
-
 def peak_month(y: pd.Series) -> int | None:
     """Месяц пика спроса или ``None`` для ряда без сезонной амплитуды.
 
@@ -84,7 +76,8 @@ def peak_month(y: pd.Series) -> int | None:
     ``SEASONAL_MAX_MIN_RATIO`` колебания неотличимы от шума, пик
     «найдётся» у любого ряда — поэтому его нет. Равные максимумы —
     наименьший номер месяца (детерминированность, winter-пики
-    декабрь/январь дают декабрь).
+    декабрь/январь дают декабрь). Профиль — общий с ранжированием:
+    :func:`wordstat_trends.trends.ranking.monthly_profile`.
     """
 
     if len(y) < MIN_PROFILE_MONTHS or seasonal_max_min_ratio(y) < SEASONAL_MAX_MIN_RATIO:
