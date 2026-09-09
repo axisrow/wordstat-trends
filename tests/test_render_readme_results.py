@@ -86,3 +86,16 @@ def test_render_block_without_baseline_fails_loudly(tmp_path):
     )
     with pytest.raises(RenderError, match="бейзлайна"):
         render_block(load_summary(no_baseline))
+
+
+def test_render_block_garbage_number_fails_with_model_named(tmp_path):
+    # Мусор в числовой колонке — RenderError с моделью и колонкой,
+    # а не голый ValueError без контекста.
+    garbage = tmp_path / "garbage.csv"
+    garbage.write_text(
+        "model,mase_median,win_rate_vs_baseline,n_phrases\n"
+        "seasonal_naive,0.8,0.0,1\ntheta,не-число,1.0,1\n",
+        encoding="utf-8-sig",
+    )
+    with pytest.raises(RenderError, match="'theta'.*'mase_median'.*'не-число'"):
+        render_block(load_summary(garbage))

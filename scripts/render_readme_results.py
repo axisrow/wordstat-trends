@@ -70,8 +70,16 @@ def render_block(summary: list[dict[str, str]]) -> str:
     преимущество над наивной — отношение медианы бейзлайна к её медиане.
     """
 
+    def number(row: dict[str, str], column: str) -> float:
+        try:
+            return float(row[column])
+        except (TypeError, ValueError) as exc:
+            raise RenderError(
+                f"модель {row.get('model')!r}: колонка {column!r} не число — {row.get(column)!r}"
+            ) from exc
+
     def mase(row: dict[str, str]) -> float:
-        return float(row["mase_median"])
+        return number(row, "mase_median")
 
     baseline = next((r for r in summary if r["model"] == BASELINE_MODEL), None)
     if baseline is None:
@@ -93,7 +101,7 @@ def render_block(summary: list[dict[str, str]]) -> str:
     for row in summary:
         label = MODEL_LABELS.get(row["model"], row["model"])
         name = f"**{label}**" if row is best else label
-        lines.append(f"| {name} | {mase(row):.3f} | {float(row['win_rate_vs_baseline']):.1f} |")
+        lines.append(f"| {name} | {mase(row):.3f} | {number(row, 'win_rate_vs_baseline'):.1f} |")
     return "\n".join(lines)
 
 
@@ -110,11 +118,11 @@ def replace_block(readme_text: str, block: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    summary_path = Path(args[0]) if args else DEFAULT_SUMMARY
-    readme_path = Path(args[1]) if len(args) > 1 else DEFAULT_README
     if len(args) > 2:
         print("usage: python scripts/render_readme_results.py [summary.csv] [README.md]", file=sys.stderr)
         return 2
+    summary_path = Path(args[0]) if args else DEFAULT_SUMMARY
+    readme_path = Path(args[1]) if len(args) > 1 else DEFAULT_README
 
     summary = load_summary(summary_path)
     updated = replace_block(readme_path.read_text(encoding="utf-8"), render_block(summary))
