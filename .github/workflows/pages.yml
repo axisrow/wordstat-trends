@@ -1,0 +1,49 @@
+# Публикация витрины на GitHub Pages (issue #21).
+# Секретов нет: configure-pages выдаёт деплой-токен сам, скрейпинга из облака
+# нет — сбор данных живёт на Dokku (эпик #1), здесь только статика из репо.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить uv + Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # Сборка сайта — stdlib (src/wordstat_trends/i18n.py), зависимости проекта не нужны.
+      - name: Собрать сайт
+        run: uv run --no-project python scripts/build_site.py
+
+      - name: Загрузить артефакт Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Деплой на Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
