@@ -37,6 +37,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from wordstat_trends.forecasting.backtest import (  # noqa: E402
+    BacktestError,
     run_backtest,
     summarize_backtest,
     write_backtest_report,
@@ -57,7 +58,7 @@ def load_series_by_phrase(run_directories: list[Path]) -> dict[str, pd.Series]:
         frame = load_run(run)
         phrase = str(frame.attrs["phrase"])
         if phrase in series_by_phrase:
-            raise ValueError(f"фраза {phrase!r} встречается дважды (run {run}) — дубликаты не поддерживаются")
+            raise BacktestError(f"фраза {phrase!r} встречается дважды (run {run}) — дубликаты не поддерживаются")
         series_by_phrase[phrase] = to_monthly_series(frame)
     return series_by_phrase
 
