@@ -4861,6 +4861,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pandas" },
+    { name = "pymorphy3" },
     { name = "ruptures" },
     { name = "scikit-learn" },
     { name = "sktime" },
@@ -4877,7 +4878,6 @@ dev = [
     { name = "ruff" },
 ]
 nlp = [
-    { name = "pymorphy3" },
     { name = "sentence-transformers" },
     { name = "torch" },
 ]
@@ -4885,7 +4885,7 @@ nlp = [
 [package.metadata]
 requires-dist = [
     { name = "pandas", specifier = "==2.3.3" },
-    { name = "pymorphy3", marker = "extra == 'nlp'", specifier = "==2.0.6" },
+    { name = "pymorphy3", specifier = "==2.0.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.1.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.4" },
     { name = "ruptures", specifier = "==1.1.10" },
