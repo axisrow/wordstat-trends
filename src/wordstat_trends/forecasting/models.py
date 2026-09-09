@@ -76,8 +76,8 @@ def ets_full_series_structure(y: pd.Series) -> dict:
     """Структура ETS, выбранная AutoETS(auto=True) на ПОЛНОМ ряду.
 
     Возвращает ``{"spec": "AAdA", "has_seasonal": True, "error": "add", ...}``.
-    Прямой аналог ``sktime_has_seasonal`` из scripts/issue32_seasonal_
-    structure.py, но для месячного sp=12: фиксация структуры — требование
+    Прямой аналог ``sktime_has_seasonal`` из ``scripts/issue32_seasonal_structure.py``,
+    но для месячного sp=12: фиксация структуры — требование
     issue #74 после вывода #32 (смена ``has_seasonal`` между окнами).
 
     Атрибут ``_fitted_forecaster`` приватный, но стабильный в sktime 1.x:

@@ -9,6 +9,7 @@ import pytest
 from wordstat.models import CollectionManifest, ExportSummary, WordstatView
 
 from wordstat_trends.forecasting.baseline import (
+    INITIAL_WINDOW,
     evaluate_forecaster,
     make_expanding_splitter,
     seasonal_naive,
@@ -86,7 +87,7 @@ def test_theta_forecast_matches_framework_geometry(y):
     # Ручной прогон Theta без каркаса не падает и даёт конечный прогноз
     # на те же 12 точек (fh как у сплиттера).
     fc = theta_model()
-    fc.fit(y.iloc[:72])
+    fc.fit(y.iloc[:INITIAL_WINDOW])
     pred = fc.predict(list(range(1, 13)))
     assert pred is not None and len(pred) == 12
     assert np.all(np.isfinite(pred.to_numpy()))
