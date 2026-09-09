@@ -18,7 +18,8 @@
 HTML-фрагменты данных (строки таблиц, секции) строятся здесь с теми же
 {{ключами}} и проходят через `render` — опечатка в ключе падает так же.
 Запуск: `python scripts/build_site.py [выходной-каталог] [--artifact путь]`
-(по умолчанию _site; --artifact опционален).
+(по умолчанию _site и site_data/showcase.json — артефакт, который
+Dokku-сборка коммитит в репозиторий, issue #107).
 """
 
 from __future__ import annotations
@@ -46,6 +47,15 @@ from wordstat_trends.i18n import (  # noqa: E402
 TEMPLATES_DIR = SITE_DIR / "templates"
 LOCALES_DIR = SITE_DIR / "locales"
 ASSETS_DIR = SITE_DIR / "assets"
+
+#: Каталог артефактов витрины в репозитории (issue #107): Dokku-сборка
+#: коммитит сюда JSON ранжирования; артефакт каждого прогона заменяет
+#: предыдущий, история живёт в git. Каталог не исключается .gitignore.
+SITE_DATA_DIR = SITE_DIR.parent / "site_data"
+
+#: Артефакт витрины по умолчанию (showcase/v2 из wordstat_trends.showcase);
+#: файла нет (первые сборки до коммита результатов) — пустое состояние.
+DEFAULT_ARTIFACT_PATH = SITE_DATA_DIR / "showcase.json"
 
 #: Схема артефакта (см. wordstat_trends.showcase.SCHEMA); строкой, а не
 #: импортом: showcase тянет pandas через trends.ranking, а сборка сайта
@@ -145,12 +155,16 @@ def lint_templates() -> None:
 def load_artifact(path: Path | str | None) -> dict | None:
     """Артефакт витрины целиком; None — файла нет или фраз в нём нет.
 
-    Битая схема — ошибка сборки: молча показать пустое состояние на
-    испорченном артефакте значило бы публиковать витрину «данных нет»
-    поверх существующих данных.
+    Отсутствие файла — не ошибка (пустое состояние, #21 п.7): первые
+    сборки Pages идут до того, как Dokku-контейнер закоммитит первый
+    артефакт в site_data/. Битая схема — ошибка сборки: молча показать
+    пустое состояние на испорченном артефакте значило бы публиковать
+    витрину «данных нет» поверх существующих данных.
     """
 
     if path is None:
+        return None
+    if not Path(path).exists():
         return None
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema") != SHOWCASE_SCHEMA:
@@ -401,8 +415,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--artifact",
         type=Path,
-        default=None,
-        help="JSON-артефакт витрины (showcase/v2); без него — пустое состояние",
+        default=DEFAULT_ARTIFACT_PATH,
+        help=f"JSON-артефакт витрины (по умолчанию {DEFAULT_ARTIFACT_PATH}); "
+        "нет файла или фраз — пустое состояние",
     )
     return parser.parse_args(argv)
 
