@@ -6,7 +6,7 @@
 зависимостей проекта) не может их прочитать, поэтому ядро сериализует
 витрину в JSON-артефакт, который ``scripts/build_site.py`` кладёт в шаблоны.
 
-Артефакт (``showcase/v1``):
+Артефакт (``showcase/v2``):
 
 .. code-block:: json
 
@@ -30,7 +30,10 @@
 кластер `Cluster` + доминирующий класс состава + агрегированный скор.
 Считаются ядром на основном BERTA-конвейере и фиксируются в артефакте —
 сборка сайта в Actions не касается extra `nlp` (выбор зафиксирован в
-issue-комментарии #106). ``niches`` — всегда список (может быть пустым:
+issue-комментарии #106). Продакшн-пути, который прогоняет кластеризацию
+и пишет непустые ``niches`` (CLI/пайплайн сбора), в репо пока нет —
+встраывание в конвейер артефакта относится к эпику #14; сейчас артефакт
+с ``niches`` получается только прямыми вызовами (тесты). ``niches`` — всегда список (может быть пустым:
 кластеризация не нашла ни одной фразы с лексическими токенами).
 
 Артефакт дополняется секцией (schema ``showcase/v2``):
@@ -124,11 +127,14 @@ def build_niches(ranked: list[RankedPhrase], result: ClusteringResult) -> list[N
 
 
 def serialize_showcase(
-    ranked: list[RankedPhrase],
-    result: ClusteringResult | None = None,
-    generated_at: date | None = None,
+    ranked: list[RankedPhrase], generated_at: date | None = None, *, result: ClusteringResult | None = None
 ) -> dict:
-    """Отранжированная витрина (+ результат кластеризации) → словарь артефакта."""
+    """Отранжированная витрина (+ результат кластеризации) → словарь артефакта.
+
+    ``result`` keyword-only: третий позиционный аргумент исторически был
+    ``generated_at``, и позиционный вызов со старой сигнатурой молча скормил
+    бы ``date`` в ``build_niches`` с невнятным AttributeError.
+    """
 
     niches = build_niches(ranked, result) if result is not None else []
     return {
@@ -171,15 +177,18 @@ def serialize_showcase(
 def save_showcase(
     ranked: list[RankedPhrase],
     path: Path | str,
-    result: ClusteringResult | None = None,
     generated_at: date | None = None,
+    *,
+    result: ClusteringResult | None = None,
 ) -> Path:
     """Витрина (+ результат кластеризации) → файл артефакта."""
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        json.dumps(serialize_showcase(ranked, result, generated_at), ensure_ascii=False, indent=2),
+        json.dumps(
+            serialize_showcase(ranked, generated_at, result=result), ensure_ascii=False, indent=2
+        ),
         encoding="utf-8",
     )
     return target

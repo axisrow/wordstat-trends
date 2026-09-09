@@ -4,7 +4,7 @@
 живёт в site/locales/*.json и подставляется в шаблоны через {{ключ}}.
 
 Данные витрины (issue #104) — JSON-артефакт ранжирования (схема
-``showcase/v1``, пишется ядром ``wordstat_trends.showcase``). Сборка читает
+``showcase/v2``, пишется ядром ``wordstat_trends.showcase``). Сборка читает
 его сама (json, не пакет: артефакт пишется в CI без зависимостей проекта);
 отсутствие или пустота артефакта — пустое состояние, не ошибка (#21 п.7).
 
@@ -311,7 +311,7 @@ def build(
 ) -> list[Path]:
     """Собирает страницы обеих локалей и ассеты; возвращает список страниц.
 
-    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v1); его
+    ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2); его
     отсутствие/пустота → пустое состояние (сборка не падает, #21 п.7).
     """
     locales = load_locales()
@@ -402,7 +402,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--artifact",
         type=Path,
         default=None,
-        help="JSON-артефакт витрины (showcase/v1); без него — пустое состояние",
+        help="JSON-артефакт витрины (showcase/v2); без него — пустое состояние",
     )
     return parser.parse_args(argv)
 

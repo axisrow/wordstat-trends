@@ -115,9 +115,11 @@ def test_niches_ordered_by_class_then_score():
 
 
 def test_serialize_niches_shape():
-    artifact = serialize_showcase(_ranked(), cluster_phrases(
-        [row.phrase for row in _ranked()], pipeline="tfidf"
-    ), generated_at=date(2026, 9, 10))
+    artifact = serialize_showcase(
+        _ranked(),
+        generated_at=date(2026, 9, 10),
+        result=cluster_phrases([row.phrase for row in _ranked()], pipeline="tfidf"),
+    )
     assert artifact["schema"] == SCHEMA
     assert artifact["niches"], "ниши должны быть непустыми"
     for niche in artifact["niches"]:
@@ -136,9 +138,11 @@ def test_serialize_without_clustering_gives_empty_niches():
 def test_niche_round_trip_through_file(tmp_path):
     ranked = _ranked()
     result = cluster_phrases([row.phrase for row in ranked], pipeline="tfidf")
-    path = save_showcase(ranked, tmp_path / "showcase.json", result=result, generated_at=date(2026, 9, 10))
+    path = save_showcase(
+        ranked, tmp_path / "showcase.json", generated_at=date(2026, 9, 10), result=result
+    )
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data == serialize_showcase(ranked, result, generated_at=date(2026, 9, 10))
+    assert data == serialize_showcase(ranked, generated_at=date(2026, 9, 10), result=result)
 
 
 # --- рендер секции на витрине ---------------------------------------------------
@@ -160,7 +164,7 @@ def _build(tmp_path: Path, artifact: dict | None) -> dict[str, str]:
 def test_index_renders_niche_section_with_anchors(tmp_path):
     ranked = _ranked()
     result = cluster_phrases([row.phrase for row in ranked], pipeline="tfidf")
-    pages = _build(tmp_path, serialize_showcase(ranked, result))
+    pages = _build(tmp_path, serialize_showcase(ranked, result=result))
     index = pages["index.html"]
     assert "Темы и ниши" in index
     niche = next(n for n in result.clusters if "курсы английского" in n.phrases)
