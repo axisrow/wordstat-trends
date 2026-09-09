@@ -120,7 +120,7 @@ def evaluate_models(
     y: pd.Series,
     splitter: ExpandingWindowSplitter | None = None,
 ) -> pd.DataFrame:
-    """Бейзлайн, Theta и AutoETS на ОДНИХ фолдах → MASE по фолдам.
+    """Бейзлайн, Theta, AutoETS и AutoARIMA на ОДНИХ фолдах → MASE по фолдам.
 
     Один и тот же сплиттер (по умолчанию — из
     :func:`~wordstat_trends.forecasting.baseline.make_expanding_splitter`)
