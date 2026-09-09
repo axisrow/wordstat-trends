@@ -20,7 +20,7 @@ import pandas as pd
 from wordstat_trends.forecasting.baseline import to_monthly_series
 from wordstat_trends.loader import parse_dynamics_rows
 from wordstat_trends.nlp.clustering import cluster_phrases
-from wordstat_trends.showcase import build_niches
+from wordstat_trends.showcase import build_niches, serialize_showcase
 from wordstat_trends.sourcing.scoring import (
     INTENT_MARKER_LEMMAS,
     SEASONAL_RATIO_TOP,
@@ -276,3 +276,16 @@ def test_intent_share_not_in_score():
         "window",
         "stability",
     }
+
+
+def test_serialize_carries_real_stability_metrics():
+    # serialize_showcase передаёт записи в build_niches: метрики устойчивости
+    # в артефакте реальные, а не дефолтные (иначе — мёртвые поля артефакта)
+    records = _records()
+    artifact = serialize_showcase(
+        records,
+        result=cluster_phrases([record.phrase for record in records], pipeline="tfidf"),
+    )
+    english = next(n for n in artifact["niches"] if "английский" in n["topic"])
+    assert english["filtered_share"] == 1 / 5
+    assert english["median_growth_age_months"] == SCORE_WINDOW

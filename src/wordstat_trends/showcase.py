@@ -143,8 +143,9 @@ def build_niches(
         dominant = min(CLASS_ORDER, key=lambda klass: (-counts[klass], CLASS_ORDER.index(klass)))
         dominant_scores = [row.score for row in members if row.klass is dominant]
         # устойчивость (#115): доля отфильтрованного состава — по кластеру
-        # против записей до отсева; медиана возраста роста — по составу
-        # доминирующего класса «растёт» (вне его components is None).
+        # против записей до отсева; медиана возраста роста — по всем
+        # растущим фразам состава (components не None только у «растёт»);
+        # читается скорингом только для ниш с классом «растёт».
         total = sum(1 for phrase in cluster.phrases if phrase in by_record)
         filtered = sum(
             1
@@ -191,7 +192,7 @@ def serialize_showcase(
 
     ranked = rank_showcase(records)
     by_phrase = {record.phrase: record for record in records}
-    niches = build_niches(ranked, result) if result is not None else []
+    niches = build_niches(ranked, result, records) if result is not None else []
     return {
         "schema": SCHEMA,
         "generated_at": (generated_at or date.today()).isoformat(),
