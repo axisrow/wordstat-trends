@@ -96,4 +96,11 @@ main { padding: 1.5rem 0; }
 .trend-section { margin-top: 2rem; }
 .trend-list { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 .trend-list li { margin: 0.25rem 0; }
+/* Секция ниш на главной (issue #106) */
+.niche-section { margin-top: 2.5rem; }
+.niche-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 1rem; }
+.niche-topic { margin: 0; font-size: 1.05rem; }
+.niche-class { margin: 0.15rem 0 0.35rem; color: var(--muted); font-size: 0.85rem; }
+.niche-phrases { margin: 0; padding-left: 1.25rem; }
+.niche-phrases li { margin: 0.2rem 0; }
 .data-date { color: var(--muted); font-size: 0.85rem; }
