@@ -99,13 +99,23 @@ class TrendVerdict:
 def month_ratios(score: GrowthScore) -> tuple[float, ...]:
     """Помесячные отношения факт/прогноз окна скоринга.
 
-    Прогноз сезонного наива positivity гарантирована :func:`score_growth`
-    (нулевой прогноз там — громкий отказ).
+    ``score_growth`` гарантирует только положительность среднего прогноза
+    окна, но не позначную: сезонный наив прогнозирует месяц значением
+    ровно 12 месяцев назад, и нулевой месяц в train даёт нулевой прогноз
+    для месяца окна — отношение уходит в inf, месяц автоматически
+    «подтверждает» рост. Это тихий ложноположительный вердикт того класса,
+    от которого модуль защищает (аналог NaN-гварда #83) — громкий отказ
+    вместо молчаливого inf.
     """
 
-    return tuple(
-        float(a) / float(f) for a, f in zip(score.actual.to_numpy(), score.forecast.to_numpy())
-    )
+    forecast = score.forecast.to_numpy()
+    bad = [p for p, f in zip(score.window, forecast) if f <= 0]
+    if bad:
+        raise ValueError(
+            f"ряд {score.phrase!r}: неположительный прогноз месяцев {bad} — "
+            f"помесячное отношение факт/прогноз не определено"
+        )
+    return tuple(float(a) / f for a, f in zip(score.actual.to_numpy(), forecast))
 
 
 def _seasonal_profile(history: pd.Series) -> pd.Series:
