@@ -36,9 +36,12 @@ def test_tfidf_pipeline_output_shape():
     assert len(set(clustering["labels"])) == EXPECTED_N_GROUPS
     assert -1.0 <= clustering["silhouette"] <= 1.0
     assert -1.0 <= clustering["ari_vs_expected"] <= 1.0
-    # Стабильность: ARI всех пар seed'ов — среднее и минимум.
-    assert 0.0 <= clustering["ari_between_seeds_mean"] <= 1.0
-    assert 0.0 <= clustering["ari_between_seeds_min"] <= 1.0
+    # Стабильность: ARI всех пар seed'ов — среднее и минимум. Нижняя граница
+    # -1.0: ARI может быть отрицательным (разбиения хуже случайного) — на
+    # текущем наборе он положителен, но ассерт проверяет контракт метрики,
+    # а не конкретный исход.
+    assert -1.0 <= clustering["ari_between_seeds_mean"] <= 1.0
+    assert -1.0 <= clustering["ari_between_seeds_min"] <= 1.0
     assert len(result["top_terms_by_cluster"]) == EXPECTED_N_GROUPS
     assert len(result["top_phrases_by_cluster"]) == EXPECTED_N_GROUPS
 
