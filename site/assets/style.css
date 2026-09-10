@@ -126,3 +126,19 @@ main { padding: 1.5rem 0; }
 .niche-phrases { margin: 0; padding-left: 1.25rem; }
 .niche-phrases li { margin: 0.2rem 0; }
 .data-date { color: var(--muted); font-size: 0.85rem; }
+/* Секция приоритизации закупок (issue #116) */
+.sourcing-section { margin-top: 2.5rem; }
+.sourcing-formula { color: var(--muted); font-size: 0.85rem; }
+.table-wrapper { overflow-x: auto; }
+.sourcing-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
+.sourcing-table th,
+.sourcing-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.sourcing-topic { font-weight: 600; }
+.sourcing-score { font-weight: 600; white-space: nowrap; }
+.sourcing-phrases { margin: 0; padding-left: 1.25rem; }
+.sourcing-phrases li { margin: 0.2rem 0; }

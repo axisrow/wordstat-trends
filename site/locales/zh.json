@@ -47,5 +47,21 @@
   "explain.stable": "需求平稳",
   "trend.why": "为何上榜",
   "trend.phrase.untranslated": "（暂无翻译）",
-  "trend.chart.caption": "按月的查询历史图表；高亮部分为评分窗口的最后几个月"
+  "trend.chart.caption": "按月的查询历史图表；高亮部分为评分窗口的最后几个月",
+  "sourcing.title": "商品利基：什么在增长，何时采购",
+  "sourcing.formula": "采购评分 = 0.4 × 趋势 + 0.2 × 季节性 + 0.2 × 窗口 + 0.2 × 稳定性；每项取值 0 到 1",
+  "sourcing.empty.title": "采购优先级尚未计算",
+  "sourcing.empty.text": "当流水线开始向展示工件写入非空利基时，此处将出现利基采购评分。",
+  "sourcing.col.topic": "主题",
+  "sourcing.col.class": "类别",
+  "sourcing.col.score": "采购评分",
+  "sourcing.col.trend": "趋势",
+  "sourcing.col.seasonal": "季节性",
+  "sourcing.col.window": "窗口",
+  "sourcing.col.stability": "稳定性",
+  "sourcing.col.calendar": "采购时间",
+  "sourcing.col.phrases": "构成",
+  "sourcing.window.on_time": "{order}下单 → {peak}高峰，来得及",
+  "sourcing.window.missed": "{order}下单 → 下一周期{peak}高峰：今年的高峰已错过",
+  "sourcing.window.none": "无季节性高峰 — 依据趋势决策"
 }

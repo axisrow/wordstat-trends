@@ -30,10 +30,16 @@ _RU_MONTHS_GENITIVE = [
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 ]
 
+_RU_MONTHS_PREPOSITIONAL = [
+    "январе", "феврале", "марте", "апреле", "мае", "июне",
+    "июле", "августе", "сентябре", "октябре", "ноябре", "декабре",
+]
+
 _ZH_MONTHS = [
     "1月", "2月", "3月", "4月", "5月", "6月",
     "7月", "8月", "9月", "10月", "11月", "12月",
 ]
+
 
 class Locale(StrEnum):
     RU = "ru"
@@ -106,6 +112,30 @@ def format_ratio(value: float, locale: Locale | str = Locale.RU) -> str:
     locale = normalize_locale(str(locale))
     rendered = f"{value:.1f}"
     return rendered if locale is Locale.ZH else rendered.replace(".", ",")
+
+
+def format_month_name(
+    month: int, locale: Locale | str = Locale.RU, *, case: str = "prepositional"
+) -> str:
+    """Номер месяца → имя месяца без года («в октябре» / «10月»).
+
+    Для окна закупки витрины (#116): «заказывать в октябре → пик в
+    декабре» — год зависит от цикла и вычисляется контекстом (артефакт
+    хранит только месяцы), показывать догадку о годе нельзя. ``case`` —
+    падеж для ru (prepositional «в октябре» — дефолт календаря закупки,
+    nominative «октябрь» — подписи вне предлога); zh падежей не имеет.
+    """
+
+    locale = normalize_locale(str(locale))
+    if not 1 <= month <= 12:
+        raise ValueError(f"месяц вне 1..12: {month}")
+    if locale is Locale.ZH:
+        return _ZH_MONTHS[month - 1]
+    if case == "nominative":
+        return _RU_MONTHS[month - 1]
+    if case == "prepositional":
+        return _RU_MONTHS_PREPOSITIONAL[month - 1]
+    raise ValueError(f"неизвестный падеж месяца: {case!r}")
 
 
 def format_date(day: date, locale: Locale | str = Locale.RU) -> str:

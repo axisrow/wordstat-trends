@@ -51,6 +51,7 @@ from wordstat_trends.i18n import (  # noqa: E402
     DEFAULT_LOCALE,
     format_date,
     format_month,
+    format_month_name,
     format_number,
     format_ratio,
     format_score,
@@ -81,11 +82,12 @@ DEFAULT_ARTIFACT_PATH = SITE_DATA_DIR / "showcase.json"
 #: Схема артефакта (см. wordstat_trends.showcase.SCHEMA); строкой, а не
 #: импортом: showcase тянет pandas через trends.ranking, а сборка сайта
 #: обязана идти на голом stdlib (CI без зависимостей проекта).
-SHOWCASE_SCHEMA = "showcase/v2"
+SHOWCASE_SCHEMA = "showcase/v3"
 
 #: Читаемые схемы: v1 (#104) не содержит ряда и ratio — карточки без
-#: графика и объяснения (расширение сериализации — #105).
-READABLE_SCHEMAS = frozenset({"showcase/v1", SHOWCASE_SCHEMA})
+#: графика и объяснения (расширение сериализации — #105); v2 не содержит
+#: sourcing — без секции приоритизации закупок (расширение — #116).
+READABLE_SCHEMAS = frozenset({"showcase/v1", "showcase/v2", SHOWCASE_SCHEMA})
 
 #: Сколько фраз каждой секции показывать на главной: тренды — сразу
 #: (эпик #1), без прокрутки простыня всех классов; полная таблица — на
@@ -408,6 +410,97 @@ def render_niche_section(artifact: dict, code: str, cache: TranslationCache) -> 
     )
 
 
+def _sourcing_window_html(window: dict | None, messages: dict[str, str], code: str) -> str:
+    """Окно закупки ниши → ячейка таблицы: календарь по шаблону локали.
+
+    Шаблоны — те же ключи локали с ``{order}``/``{peak}``, что у
+    объяснений карточек (#20): месяцы подставляются отформатированными
+    по локали и экранируются (данные, не разметка). ``window=None`` —
+    несезонная ниша, честный текст «решение по тренду» (#114).
+    """
+
+    if window is None:
+        return "<p>{{sourcing.window.none}}</p>"
+    params = {
+        "order": escape_data(format_month_name(int(window["order_month"]), code)),
+        "peak": escape_data(format_month_name(int(window["peak_month"]), code)),
+    }
+    key = "sourcing.window.on_time" if window.get("on_time") else "sourcing.window.missed"
+    try:
+        text = messages[key].format(**params)
+    except KeyError as exc:
+        raise BuildError(f"шаблон окна закупки {key!r}: плейсхолдер {exc} не получил значения") from exc
+    return f"<p>{escape_data(text)}</p>"
+
+
+def render_sourcing_section(
+    artifact: dict, messages: dict[str, str], code: str, cache: TranslationCache
+) -> str:
+    """Секция приоритизации закупок (issue #116): что растёт и когда закупать.
+
+    ``sourcing`` в артефакте нет (v2) — секции нет вовсе, как у ниш без
+    кластеризации; пустой список (v3 без ниш — продакшн-путь непустых
+    ``niches`` ещё в работе, эпик #14) — секция с пустым состоянием:
+    артефакт уже «умеет» приоритизацию, витрина объясняет, что данных
+    нет. Таблица держит объяснимость на первом плане: скор и все четыре
+    компоненты — отдельными колонками, формула весов — под заголовком.
+    """
+
+    sourcing = artifact.get("sourcing")
+    if sourcing is None:
+        return ""
+    if not sourcing:
+        return (
+            '<section class="sourcing-section">\n'
+            "<h2>{{sourcing.title}}</h2>\n"
+            '<div class="empty-state">\n'
+            '<p class="empty-title">{{sourcing.empty.title}}</p>\n'
+            "<p>{{sourcing.empty.text}}</p>\n"
+            "</div>\n"
+            "</section>"
+        )
+    rows: list[str] = []
+    for entry in sourcing:
+        klass = str(entry["class"])
+        key = SECTION_KEYS.get(klass)
+        if key is None:
+            raise BuildError(f"неизвестный класс ниши в sourcing: {klass!r}")
+        components = entry.get("components") or {}
+        phrases = "".join(
+            f'<li><a href="{{{{trends.href}}}}#phrase-{html.escape(str(item["rank"]), quote=True)}">'
+            f"{phrase_html(item['phrase'], code, cache)}</a></li>"
+            for item in entry.get("phrases", [])
+        )
+        rows.append(
+            "<tr>\n"
+            f'<td class="sourcing-topic">{phrase_html(entry["topic"], code, cache)}</td>\n'
+            f"<td>{{{{{key}}}}}</td>\n"
+            f'<td class="sourcing-score">{escape_data(format_score(float(entry["score"]), code))}</td>\n'
+            f"<td>{escape_data(format_score(float(components.get('trend', 0.0)), code))}</td>\n"
+            f"<td>{escape_data(format_score(float(components.get('seasonal', 0.0)), code))}</td>\n"
+            f"<td>{escape_data(format_score(float(components.get('window', 0.0)), code))}</td>\n"
+            f"<td>{escape_data(format_score(float(components.get('stability', 0.0)), code))}</td>\n"
+            f"<td>{_sourcing_window_html(entry.get('window'), messages, code)}</td>\n"
+            f'<td><ul class="sourcing-phrases">{phrases}</ul></td>\n'
+            "</tr>"
+        )
+    return (
+        '<section class="sourcing-section">\n'
+        "<h2>{{sourcing.title}}</h2>\n"
+        '<p class="sourcing-formula">{{sourcing.formula}}</p>\n'
+        '<div class="table-wrapper">\n<table class="sourcing-table">\n'
+        "<thead>\n<tr>\n"
+        "<th>{{sourcing.col.topic}}</th>\n<th>{{sourcing.col.class}}</th>\n"
+        "<th>{{sourcing.col.score}}</th>\n<th>{{sourcing.col.trend}}</th>\n"
+        "<th>{{sourcing.col.seasonal}}</th>\n<th>{{sourcing.col.window}}</th>\n"
+        "<th>{{sourcing.col.stability}}</th>\n<th>{{sourcing.col.calendar}}</th>\n"
+        "<th>{{sourcing.col.phrases}}</th>\n"
+        "</tr>\n</thead>\n<tbody>\n"
+        + "\n".join(rows)
+        + "\n</tbody>\n</table>\n</div>\n</section>"
+    )
+
+
 def render_trends_body(
     artifact: dict | None,
     messages: dict[str, str],
@@ -681,7 +774,9 @@ def build(
                     render(
                         render_index_sections(artifact, code, cache)
                         + "\n"
-                        + render_niche_section(artifact, code, cache),
+                        + render_niche_section(artifact, code, cache)
+                        + "\n"
+                        + render_sourcing_section(artifact, messages, code, cache),
                         messages,
                         context,
                         f"{code}/index.sections",

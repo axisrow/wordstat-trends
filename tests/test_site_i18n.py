@@ -18,7 +18,13 @@ from typing import Any
 import pytest
 
 from scripts import build_site
-from wordstat_trends.i18n import format_date, format_month, format_number, format_share
+from wordstat_trends.i18n import (
+    format_date,
+    format_month,
+    format_month_name,
+    format_number,
+    format_share,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -161,6 +167,35 @@ def test_month_and_date_formats():
     assert format_month(d, "zh") == "2024年8月"
     assert format_date(date(2026, 9, 9), "ru") == "9 сентября 2026 г."
     assert format_date(date(2026, 9, 9), "zh") == "2026年9月9日"
+
+
+# --- ключи секции приоритизации закупок (issue #116) ---------------------------
+
+
+SOURCING_KEYS = [
+    key
+    for key in json.loads((Path(build_site.LOCALES_DIR) / "ru.json").read_text(encoding="utf-8"))
+    if key.startswith("sourcing.")
+]
+
+
+def test_sourcing_keys_present_in_both_locales():
+    # полнота i18n: все sourcing-ключи есть в обеих локалях (тот же гейт,
+    # что у load_locales, но зафиксированный на новых ключах)
+    assert SOURCING_KEYS, "ключи sourcing.* должны существовать"
+    zh = json.loads((Path(build_site.LOCALES_DIR) / "zh.json").read_text(encoding="utf-8"))
+    assert set(SOURCING_KEYS) <= zh.keys()
+
+
+def test_month_name_localized_for_purchase_window():
+    # «заказывать в октябре → пик в декабре»: месяц без года, по локали;
+    # дефолт — предложный падеж (календарь закупки идёт с предлогом «в»)
+    assert format_month_name(10, "ru") == "октябре"
+    assert format_month_name(12, "ru") == "декабре"
+    assert format_month_name(10, "ru", case="nominative") == "октябрь"
+    assert format_month_name(10, "zh") == "10月"
+    with pytest.raises(ValueError):
+        format_month_name(13, "ru")
 
 
 def test_number_format_matches_wordstat_style():

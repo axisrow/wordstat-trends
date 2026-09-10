@@ -6,15 +6,22 @@
 зависимостей проекта) не может их прочитать, поэтому ядро сериализует
 витрину в JSON-артефакт, который ``scripts/build_site.py`` кладёт в шаблоны.
 
-Артефакт (``showcase/v2``):
+Артефакт (``showcase/v3``):
 
 .. code-block:: json
 
     {
-      "schema": "showcase/v2",
+      "schema": "showcase/v3",
       "generated_at": "2026-09-09",
       "niches": [
         {"topic": "...", "class": "GROWING", "score": 0.55,
+         "phrases": [{"phrase": "...", "rank": 1}]}
+      ],
+      "sourcing": [
+        {"topic": "...", "class": "GROWING", "score": 0.42,
+         "components": {"trend": ..., "seasonal": ..., "window": ...,
+                        "stability": ...},
+         "window": {"order_month": 10, "peak_month": 12, "on_time": true},
          "phrases": [{"phrase": "...", "rank": 1}]}
       ],
       "phrases": [
@@ -36,8 +43,17 @@
 факт/прогноз из :class:`GrowthScore` (в ``RankedPhrase`` попадает только
 взвешенный скор витрины), ``series`` — месячный ряд целиком: витрина
 показывает и историю, и окно скоринга (``window_months`` последних точек).
-Читается и v1 (без ряда — карточки без графика и объяснения), пишется
-только v2.
+Читается и v1 (без ряда — карточки без графика и объяснения), v2 (без
+sourcing — без секции приоритизации закупок), пишется только v3.
+
+Sourcing (issue #116, фаза 6.3): приоритизация закупки ниш — скор и
+компоненты из :func:`wordstat_trends.sourcing.scoring.score_sourcing`,
+окно закупки (#114) сериализуется календарём (месяц заказа, месяц пика,
+успеваем), полные периоды не кладутся: витрине для «заказывать в октябре
+→ пик в декабре» достаточно номеров месяцев. ``window`` — ``None`` для
+несезонной ниши. ``intent_share`` — гипотеза purchase-intent (#115), в
+скор не входит и в рендер витрины тоже (объяснимость: показываем только
+то, что входит в скор).
 
 Ниши (issue #106, формулы предрегистрированы в docs/TRENDS.md): ниша =
 кластер `Cluster` + доминирующий класс состава + агрегированный скор.
@@ -59,6 +75,8 @@ from datetime import date
 from pathlib import Path
 
 from wordstat_trends.nlp.clustering import ClusteringResult
+from wordstat_trends.sourcing.scoring import NicheSourcing, score_sourcing
+from wordstat_trends.sourcing.timing import DEFAULT_LEAD_TIME_WEEKS
 from wordstat_trends.trends.ranking import (
     CLASS_ORDER,
     PhraseRecord,
@@ -67,11 +85,12 @@ from wordstat_trends.trends.ranking import (
     rank_showcase,
 )
 
-SCHEMA = "showcase/v2"
+SCHEMA = "showcase/v3"
 
 #: Схемы, которые читает `load_showcase`: v1 не содержит ряда и ratio —
-#: витрина собирается, но без графиков и объяснений.
-READABLE_SCHEMAS = frozenset({"showcase/v1", SCHEMA})
+#: витрина собирается, но без графиков и объяснений; v2 не содержит
+#: sourcing — без секции приоритизации закупок (#116).
+READABLE_SCHEMAS = frozenset({"showcase/v1", "showcase/v2", SCHEMA})
 
 #: Сколько фраз состава ниши показывать на витрине (ссылки на карточки).
 NICHE_TOP_PHRASES = 5
@@ -173,11 +192,57 @@ def build_niches(
     return niches
 
 
+def _serialize_sourcing(
+    rows: list[NicheSourcing],
+    ranked: list[RankedPhrase],
+) -> list[dict]:
+    """Строки приоритизации закупки (#115) → блок ``sourcing`` артефакта.
+
+    Топ-фразы состава — те же ``NICHE_TOP_PHRASES`` и порядок витрины, что
+    у ниш: ранги берутся из ``ranked`` (у NicheSourcing только строки
+    фраз, ранги живут в витрине). ``window`` сериализуется календарём без
+    полных периодов — номеров месяцев достаточно (см. докстринг модуля).
+    """
+
+    rank_by_phrase = {row.phrase: row.rank for row in ranked}
+    return [
+        {
+            "topic": row.topic,
+            "class": row.klass.name,
+            "score": round(row.score, 6),
+            "components": {
+                "trend": round(row.components.trend, 6),
+                "seasonal": round(row.components.seasonal, 6),
+                "window": round(row.components.window, 6),
+                "stability": round(row.components.stability, 6),
+            },
+            "window": (
+                {
+                    "order_month": row.window.order_month,
+                    "peak_month": row.window.peak_month,
+                    "on_time": row.window.on_time,
+                }
+                if row.window is not None
+                else None
+            ),
+            "filtered_share": round(row.filtered_share, 6),
+            "median_growth_age_months": row.median_growth_age_months,
+            "intent_share": round(row.intent_share, 6),
+            "phrases": [
+                {"phrase": phrase, "rank": rank_by_phrase[phrase]}
+                for phrase in row.phrases[:NICHE_TOP_PHRASES]
+            ],
+        }
+        for row in rows
+    ]
+
+
 def serialize_showcase(
     records: list[PhraseRecord],
     generated_at: date | None = None,
     *,
     result: ClusteringResult | None = None,
+    lead_time_weeks: int = DEFAULT_LEAD_TIME_WEEKS,
 ) -> dict:
     """Записи фраз (+ результат кластеризации) → словарь артефакта.
 
@@ -187,15 +252,18 @@ def serialize_showcase(
     в витрину. ``result`` keyword-only: третий позиционный аргумент
     исторически был ``generated_at``, и позиционный вызов со старой
     сигнатурой молча скормил бы ``date`` в ``build_niches`` с невнятным
-    AttributeError.
+    AttributeError. ``lead_time_weeks`` — срок поставки для окна закупки
+    sourcing-блока (#114, дефолт — ж/д пресет).
     """
 
     ranked = rank_showcase(records)
     by_phrase = {record.phrase: record for record in records}
     niches = build_niches(ranked, result, records) if result is not None else []
+    sourcing = score_sourcing(niches, records, lead_time_weeks=lead_time_weeks) if niches else []
     return {
         "schema": SCHEMA,
         "generated_at": (generated_at or date.today()).isoformat(),
+        "sourcing": _serialize_sourcing(sourcing, ranked),
         "niches": [
             {
                 "topic": niche.topic,
@@ -247,6 +315,7 @@ def save_showcase(
     generated_at: date | None = None,
     *,
     result: ClusteringResult | None = None,
+    lead_time_weeks: int = DEFAULT_LEAD_TIME_WEEKS,
 ) -> Path:
     """Витрина (+ результат кластеризации) → файл артефакта."""
 
@@ -254,7 +323,11 @@ def save_showcase(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(
-            serialize_showcase(records, generated_at, result=result), ensure_ascii=False, indent=2
+            serialize_showcase(
+                records, generated_at, result=result, lead_time_weeks=lead_time_weeks
+            ),
+            ensure_ascii=False,
+            indent=2,
         ),
         encoding="utf-8",
     )
@@ -264,9 +337,10 @@ def save_showcase(
 def load_showcase(path: Path | str) -> dict:
     """Файл артефакта → словарь; схема и структура проверяются, не молча.
 
-    v1 читается для обратной совместимости (карточки без ряда); всё, что
-    не v1/v2, — ошибка: молча показать пустое состояние поверх
-    существующих данных хуже громкого отказа.
+    v1 читается для обратной совместимости (карточки без ряда), v2 — без
+    sourcing; всё, что не входит в READABLE_SCHEMAS, — ошибка: молча
+    показать пустое состояние поверх существующих данных хуже громкого
+    отказа.
     """
 
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -280,6 +354,9 @@ def load_showcase(path: Path | str) -> dict:
     niches = data.get("niches", [])
     if not isinstance(niches, list):
         raise ShowcaseError("артефакт с некорректным списком niches")
+    sourcing = data.get("sourcing", [])
+    if not isinstance(sourcing, list):
+        raise ShowcaseError("артефакт с некорректным списком sourcing")
     return data
 
 
