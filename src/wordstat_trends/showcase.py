@@ -94,6 +94,12 @@ class Niche:
     klass: TrendClass
     score: float
     members: list[RankedPhrase]
+    # Метрики устойчивости ниши (issue #115): доля состава, отсеянного
+    # ступенью #84, и медиана возраста роста состава. Считаются только
+    # когда build_niches переданы записи до отсева (иначе дефолт:
+    # «отсева нет», возраст — по составу витрины).
+    filtered_share: float = 0.0
+    median_growth_age_months: int | None = None
 
     @property
     def topic(self) -> str:
@@ -101,16 +107,27 @@ class Niche:
         return ", ".join(self.top_lemmas)
 
 
-def build_niches(ranked: list[RankedPhrase], result: ClusteringResult) -> list[Niche]:
+def build_niches(
+    ranked: list[RankedPhrase],
+    result: ClusteringResult,
+    records: list[PhraseRecord] | None = None,
+) -> list[Niche]:
     """Связка кластеров с классами трендов: кластеры + ранги → ниши.
 
     Кластеризируются все фразы сразу (см. docs/TRENDS.md); фразы кластера
     отображаются обратно на строки витрины — состав ниши упорядочен по
     рангу (интересные фразы сверху). Итог отсортирован: CLASS_ORDER, затем
     скор убыванием, затем метка-тема (детерминированность).
+
+    ``records`` (записи **до** отсева #84, keyword-передача опциональна) —
+    шов для метрик устойчивости ниши (#115): без него ``ranked`` знает
+    только выжившие фразы, а кластер — весь свой состав; вместе они дают
+    долю отфильтрованного состава. Конвейер #106 не меняется: без
+    ``records`` метрики принимают дефолт («отсева нет»).
     """
 
     by_phrase = {row.phrase: row for row in ranked}
+    by_record = {record.phrase: record for record in records} if records is not None else {}
     niches: list[Niche] = []
     for cluster in result.clusters:
         members = sorted(
@@ -125,12 +142,31 @@ def build_niches(ranked: list[RankedPhrase], result: ClusteringResult) -> list[N
             counts[row.klass] += 1
         dominant = min(CLASS_ORDER, key=lambda klass: (-counts[klass], CLASS_ORDER.index(klass)))
         dominant_scores = [row.score for row in members if row.klass is dominant]
+        # устойчивость (#115): доля отфильтрованного состава — по кластеру
+        # против записей до отсева; медиана возраста роста — по всем
+        # растущим фразам состава (components не None только у «растёт»);
+        # читается скорингом только для ниш с классом «растёт».
+        total = sum(1 for phrase in cluster.phrases if phrase in by_record)
+        filtered = sum(
+            1
+            for phrase in cluster.phrases
+            if phrase in by_record and by_record[phrase].filtered_out
+        )
+        ages = [
+            row.components.growth_age_months
+            for row in members
+            if row.components is not None
+        ]
         niches.append(
             Niche(
                 top_lemmas=cluster.top_lemmas,
                 klass=dominant,
                 score=float(statistics.median(dominant_scores)),
                 members=members,
+                filtered_share=(filtered / total) if total else 0.0,
+                median_growth_age_months=(
+                    int(statistics.median(ages)) if ages else None
+                ),
             )
         )
     niches.sort(key=lambda niche: (CLASS_ORDER.index(niche.klass), -niche.score, niche.topic))
@@ -156,7 +192,7 @@ def serialize_showcase(
 
     ranked = rank_showcase(records)
     by_phrase = {record.phrase: record for record in records}
-    niches = build_niches(ranked, result) if result is not None else []
+    niches = build_niches(ranked, result, records) if result is not None else []
     return {
         "schema": SCHEMA,
         "generated_at": (generated_at or date.today()).isoformat(),
@@ -165,6 +201,8 @@ def serialize_showcase(
                 "topic": niche.topic,
                 "class": niche.klass.name,
                 "score": round(niche.score, 6),
+                "filtered_share": round(niche.filtered_share, 6),
+                "median_growth_age_months": niche.median_growth_age_months,
                 "phrases": [
                     {"phrase": row.phrase, "rank": row.rank}
                     for row in niche.members[:NICHE_TOP_PHRASES]
