@@ -47,5 +47,21 @@
   "explain.stable": "стабильный спрос",
   "trend.why": "Почему в списке",
   "trend.phrase.untranslated": "(нет перевода)",
-  "trend.chart.caption": "График истории запросов по месяцам; выделены последние месяцы — окно скоринга"
+  "trend.chart.caption": "График истории запросов по месяцам; выделены последние месяцы — окно скоринга",
+  "sourcing.title": "Товарные ниши: что растёт и когда закупать",
+  "sourcing.formula": "Скор закупки = 0,4 × тренд + 0,2 × сезонность + 0,2 × окно + 0,2 × устойчивость; каждая компонента — от 0 до 1",
+  "sourcing.empty.title": "Приоритизация закупок пока не посчитана",
+  "sourcing.empty.text": "Скор закупки ниш появится здесь, когда конвейер начнёт записывать непустые ниши в артефакт витрины.",
+  "sourcing.col.topic": "Тема",
+  "sourcing.col.class": "Класс",
+  "sourcing.col.score": "Скор закупки",
+  "sourcing.col.trend": "Тренд",
+  "sourcing.col.seasonal": "Сезонность",
+  "sourcing.col.window": "Окно",
+  "sourcing.col.stability": "Устойчивость",
+  "sourcing.col.calendar": "Когда закупать",
+  "sourcing.col.phrases": "Состав",
+  "sourcing.window.on_time": "заказывать в {order} → пик в {peak}, успеваем",
+  "sourcing.window.missed": "заказывать в {order} → пик в {peak} в следующем цикле: пик этого года пропущен",
+  "sourcing.window.none": "сезонного пика нет — решение по тренду"
 }
