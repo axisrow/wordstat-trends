@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import json
 import re
@@ -330,3 +331,141 @@ def test_missing_artifact_keeps_empty_state(site_root):
     # без --artifact сборка не падает и показывает пустое состояние (#21 п.7)
     page = (site_root / "trends.html").read_text(encoding="utf-8")
     assert "Данных пока нет" in page
+
+
+# --- глубина навигационных ссылок (issue #119) ---------------------------------
+
+
+def test_every_local_href_resolves_to_existing_file(tmp_path):
+    # /zh/*.html: href «zh/trends.html» резолвился бы в /zh/zh/… (404).
+    # Каждый href каждой страницы (навигация, бренд, CTA, ниши, ассеты)
+    # обязан резолвиться в существующий файл относительно каталога страницы.
+    artifact = _artifact_file(tmp_path)
+    root = tmp_path / "site"
+    build_site.build(root, build_date=date(2026, 9, 9), artifact_path=artifact)
+    pages = list(root.rglob("*.html"))
+    assert pages
+    for page in pages:
+        for href in re.findall(r'href="([^"]+)"', page.read_text(encoding="utf-8")):
+            if href.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            target = (page.parent / href.split("#")[0]).resolve()
+            assert target.exists(), f"{page.relative_to(root)}: битый href {href!r}"
+
+
+def test_zh_pages_have_no_locale_prefixed_hrefs(filled_site):
+    # регрессия #119: href собирался как prefix+имя и на /zh/*.html
+    # превращался в /zh/zh/*.html
+    for name in ("zh/index.html", "zh/trends.html", "zh/about.html"):
+        assert 'href="zh/' not in filled_site[name], name
+
+
+# --- перевод фраз в рендере (issue #120, #20) ----------------------------------
+
+
+def test_zh_shows_translation_with_original_cyrillic(filled_site):
+    # требование #20: перевод рядом с оригиналом кириллицей — закупщик
+    # сверяет фразу по Вордстату; кэш data/i18n/phrases.zh.json
+    zh = filled_site["zh/trends.html"]
+    assert "新年礼物（новогодние подарки）" in zh
+    assert "买手机（купить телефон）" in filled_site["zh/index.html"]
+
+
+def test_ru_shows_original_without_translation(filled_site):
+    ru = filled_site["trends.html"]
+    assert "новогодние подарки" in ru
+    assert "新年礼物" not in ru
+
+
+def test_zh_untranslated_phrase_shows_marker(filled_site):
+    # фразы нет в кэше — оригинал с маркером локали, не молча (#120)
+    zh = filled_site["zh/trends.html"]
+    assert "синтетический рост （暂无翻译）" in zh
+
+
+def test_marker_is_locale_key_not_literal(filled_site):
+    # маркер непереведённой фразы живёт в локали, не в коде рендера (#21)
+    assert "{{trend.phrase.untranslated}}" not in filled_site["zh/trends.html"]
+
+
+def test_custom_phrases_cache_used_for_translation(tmp_path):
+    # --phrases-cache: сборка берёт переводы из указанного кэша
+    cache_file = tmp_path / "phrases.zh.json"
+    cache_file.write_text(json.dumps({"новогодние подарки": "春节礼物"}), encoding="utf-8")
+    artifact = _artifact_file(tmp_path)
+    root = tmp_path / "site"
+    build_site.build(
+        root, build_date=date(2026, 9, 9), artifact_path=artifact,
+        phrases_cache_path=cache_file,
+    )
+    zh = (root / "zh/trends.html").read_text(encoding="utf-8")
+    assert "春节礼物（новогодние подарки）" in zh
+
+
+def test_broken_phrases_cache_fails_build(tmp_path):
+    # битый JSON-кэш — BuildError, а не молчаливая потеря переводов
+    cache_file = tmp_path / "broken.zh.json"
+    cache_file.write_text("не json", encoding="utf-8")
+    artifact = _artifact_file(tmp_path)
+    with pytest.raises(build_site.BuildError, match="не является валидным JSON"):
+        build_site.build(
+            tmp_path / "site", artifact_path=artifact, phrases_cache_path=cache_file
+        )
+
+
+# --- линт литералов f-string фрагментов (issue #121) --------------------------
+
+
+def test_lint_fragments_passes_on_current_source():
+    # фрагменты build_site.py чисты — гейт зелёный на собственном исходнике
+    build_site.lint_fragments()
+
+
+def test_fragment_lint_rejects_literal_text_in_fstring():
+    # буквальный текст в f-строке фрагмента — та же ошибка, что в шаблоне:
+    # критерий #21 «строку нельзя добавить в обход механизма» — проверкой
+    node = ast.parse('f"<p>буквальный текст {данные}</p>"').body[0].value
+    fragment = build_site._reassemble_fstring(node)
+    with pytest.raises(build_site.BuildError, match="вне механизма i18n"):
+        build_site._lint_html(fragment, "test")
+
+
+def test_fragment_lint_accepts_placeholders_and_data_in_fstring():
+    node = ast.parse('f"<p>{{{{some.key}}}} {данные}</p>"').body[0].value
+    build_site._lint_html(build_site._reassemble_fstring(node), "test")
+
+
+def test_fragment_lint_ignores_html_examples_in_docstrings():
+    # докстринг с примером HTML-тега — документация, не интерфейсная строка:
+    # гейт фрагментов не должен ронять сборку на нём (заметка ревью PR #125)
+    with_docstring = (
+        "def example():\n"
+        '    """Гейт ловит f"<p>буквальный текст</p>" — но не здесь."""\n'
+        "    return '<p>{{some.key}}</p>'\n"
+    )
+    build_site.lint_fragments(with_docstring)
+
+
+def test_fragment_lint_catches_literal_constant_outside_docstrings():
+    # та же строка кодом, не докстрингом — гейт срабатывает
+    with_literal = "frag = '<p>буквальный текст</p>'\n"
+    with pytest.raises(build_site.BuildError, match="вне механизма i18n"):
+        build_site.lint_fragments(with_literal)
+
+
+# --- кривой generated_at (issue #121) ------------------------------------------
+
+
+def test_bad_generated_at_raises_build_error(tmp_path):
+    bad = tmp_path / "bad-date.json"
+    entry = {
+        "schema": build_site.SHOWCASE_SCHEMA,
+        "generated_at": "09.09.2026",
+        "phrases": [
+            {"phrase": "x", "class": "GROWING", "rank": 1,
+             "score": 0.5, "components": None}
+        ],
+    }
+    bad.write_text(json.dumps(entry), encoding="utf-8")
+    with pytest.raises(build_site.BuildError, match="generated_at"):
+        build_site.build(tmp_path / "site", artifact_path=bad)

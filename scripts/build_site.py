@@ -33,6 +33,7 @@ Dokku-сборка коммитит в репозиторий, issue #107).
 from __future__ import annotations
 
 import argparse
+import ast
 import html
 import json
 import re
@@ -53,6 +54,15 @@ from wordstat_trends.i18n import (  # noqa: E402
     format_number,
     format_ratio,
     format_score,
+)
+from wordstat_trends.i18n_phrases import (  # noqa: E402
+    DEFAULT_CACHE_PATH as PHRASES_CACHE_PATH,
+)
+from wordstat_trends.i18n_phrases import (  # noqa: E402
+    CacheError,
+    TranslatedPhrase,
+    TranslationCache,
+    display_phrase,
 )
 
 TEMPLATES_DIR = SITE_DIR / "templates"
@@ -130,6 +140,10 @@ LETTER_RE = re.compile(r"[\w]", re.UNICODE)
 STRUCTURAL_ATTRS = frozenset({
     "href", "class", "id", "lang", "rel", "scope", "role", "charset",
     "type", "name", "media", "http-equiv", "aria-current",
+    # геометрия SVG-графика (issue #105): значения — числа/ключевые слова
+    # раскладки, перевода не содержат
+    "viewBox", "preserveAspectRatio",
+    "x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "r",
 })
 
 
@@ -155,35 +169,111 @@ def load_locales() -> dict[str, dict[str, str]]:
     return locales
 
 
-def lint_templates() -> None:
-    """Гейт «ни одной строки текста напрямую в шаблоне».
+def _lint_html(src: str, where: str) -> None:
+    """Общий гейт «ни одной строки текста напрямую» для HTML-исходника.
 
-    Работает по исходникам шаблонов, до подстановки: если в текстовом узле
-    или в любом НЕ структурном атрибуте (title, alt, data-*, ...) останется
-    буква (кириллица, латиница, CJK) вне плейсхолдера {{ключ}} — сборка
-    падает с указанием файла и атрибута. Структурные атрибуты (href, class,
+    Работает до подстановки: если в текстовом узле или в любом НЕ
+    структурном атрибуте (title, alt, data-*, ...) останется буква
+    (кириллица, латиница, CJK) вне плейсхолдера {{ключ}} — ошибка сборки
+    с указанием места и атрибута. Структурные атрибуты (href, class,
     lang, ...) проверяются по allow-list STRUCTURAL_ATTRS: расширять его
     нужно осознанно, новый текстовый атрибут в него не добавляется.
     """
+
+    for tag in re.findall(r"<[a-zA-Z][^>]*>", src):
+        for attr, value in re.findall(r'([a-zA-Z-]+)="([^"]*)"', tag):
+            if attr in STRUCTURAL_ATTRS:
+                continue
+            # content= мета-вьюпорта — конфигурация браузера («width=device-
+            # width, initial-scale=1»), не текст. content= описания страницы
+            # остаётся под гейтом и обязан быть плейсхолдером.
+            if attr == "content" and "name=\"viewport\"" in tag:
+                continue
+            stripped = PLACEHOLDER_RE.sub("", value)
+            if LETTER_RE.search(stripped):
+                raise BuildError(f"{where}: буквальный текст в атрибуте {attr}: {value!r}")
+    text_only = re.sub(r"<[^>]+>", " ", src)
+    text_only = PLACEHOLDER_RE.sub("", text_only)
+    if LETTER_RE.search(text_only):
+        snippet = " ".join(text_only.split())[:80]
+        raise BuildError(f"{where}: буквальный текст вне механизма i18n: {snippet!r}")
+
+
+def lint_templates() -> None:
+    """Гейт шаблонов site/templates/*.html: весь текст интерфейса — {{ключами}}."""
+
     for path in sorted(TEMPLATES_DIR.glob("*.html")):
-        src = path.read_text(encoding="utf-8")
-        for tag in re.findall(r"<[a-zA-Z][^>]*>", src):
-            for attr, value in re.findall(r'([a-zA-Z-]+)="([^"]*)"', tag):
-                if attr in STRUCTURAL_ATTRS:
-                    continue
-                # content= мета-вьюпорта — конфигурация браузера («width=device-
-                # width, initial-scale=1»), не текст. content= описания страницы
-                # остаётся под гейтом и обязан быть плейсхолдером.
-                if attr == "content" and "name=\"viewport\"" in tag:
-                    continue
-                stripped = PLACEHOLDER_RE.sub("", value)
-                if LETTER_RE.search(stripped):
-                    raise BuildError(f"{path.name}: буквальный текст в атрибуте {attr}: {value!r}")
-        text_only = re.sub(r"<[^>]+>", " ", src)
-        text_only = PLACEHOLDER_RE.sub("", text_only)
-        if LETTER_RE.search(text_only):
-            snippet = " ".join(text_only.split())[:80]
-            raise BuildError(f"{path.name}: буквальный текст вне механизма i18n: {snippet!r}")
+        _lint_html(path.read_text(encoding="utf-8"), path.name)
+
+
+#: Сентинел подстановки данных при разборе f-строк линтом фрагментов:
+#: буквы не содержит — сам по себе гейт не триггерит.
+_FRAGMENT_SENTINEL = "\x00"
+
+
+def _reassemble_fstring(node: ast.JoinedStr) -> str:
+    """f-строка → строка-«шаблон»: интерполяции заменены сентинелом.
+
+    Литеральные ``{{``/``}}`` f-строка отдаёт как ``{``/``}`` — после
+    сборки чанки ``{{ключ}}`` склеиваются обратно в плейсхолдер, который
+    проверяется тем же PLACEHOLDER_RE, что и в шаблонах.
+    """
+
+    parts: list[str] = []
+    for item in node.values:
+        if isinstance(item, ast.Constant):
+            parts.append(str(item.value))
+        else:  # FormattedValue — данные фрагмента (фраза, числа)
+            parts.append(_FRAGMENT_SENTINEL)
+    return "".join(parts)
+
+
+def lint_fragments(source: str | None = None) -> None:
+    """Гейт литералов HTML-фрагментов в f-строках этого файла (issue #121).
+
+    Карточки, ниши и списки собираются f-строками в ``build_site.py``, а не
+    шаблонами — буквальный текст интерфейса можно было бы протащить мимо
+    ``lint_templates``. Линт разбирает собственный исходник через ast и
+    прогоняет каждый HTML-фрагмент (строку или f-строку с тегом) через тот
+    же ``_lint_html``: критерий приёмки #21 — «строку нельзя добавить в
+    обход механизма» — держится проверкой, а не соглашением. Существующие
+    проверки не ослабляются: правила те же, что у шаблонов.
+
+    Докстринги (``ast.Expr`` со строковым значением) под гейт не попадают:
+    пример HTML в документации — не интерфейсная строка, а падение сборки
+    на нём выглядело бы «буквальным текстом» без очевидной причины.
+    """
+
+    tree = ast.parse(source if source is not None else Path(__file__).read_text(encoding="utf-8"))
+    # литеральные чанки внутри f-строк walk отдаёт отдельными Constant-узлами
+    # (обрезанные теги) — их проверяет родительская JoinedStr целиком
+    inside_fstring = {
+        id(child)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.JoinedStr)
+        for child in node.values
+    }
+    # докстринги модулей/функций/классов — Constant в позиции Expr-выражения
+    docstrings = {
+        id(stmt.value)
+        for stmt in ast.walk(tree)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.JoinedStr, ast.Constant)):
+            continue
+        if isinstance(node, ast.JoinedStr):
+            value = _reassemble_fstring(node)
+        elif (
+            id(node) in inside_fstring
+            or id(node) in docstrings
+            or not isinstance(node.value, str)
+        ):
+            continue
+        else:
+            value = node.value
+        if re.search(r"<[a-zA-Z]", value):
+            _lint_html(value, f"{Path(__file__).name}:{node.lineno}")
 
 
 def load_artifact(path: Path | str | None) -> dict | None:
@@ -223,7 +313,42 @@ def escape_data(value: object) -> str:
     return html.escape(str(value)).replace("{{", "{ {")
 
 
-def render_index_sections(artifact: dict) -> str:
+def load_phrases_cache(path: Path | str | None) -> TranslationCache:
+    """Кэш переводов фраз (issue #120): сборка читает кэш, сеть не трогает.
+
+    Кэш — источник истины (#20): пополнение — отдельный локальный прогон
+    ``scripts/translate_phrases.py`` с ключом, сборка сайта воспроизводима
+    и без сети. Битый JSON-кэш — ошибка сборки (контракт
+    ``TranslationCache.load``), а не молчаливая потеря переводов.
+    """
+
+    if path is None:
+        return TranslationCache()
+    try:
+        return TranslationCache.load(Path(path))
+    except CacheError as exc:
+        raise BuildError(str(exc)) from exc
+
+
+def phrase_html(phrase: str, code: str, cache: TranslationCache) -> str:
+    """Фраза для показа в локали: перевод + оригинал кириллицей (#20, #120).
+
+    zh — ``display_phrase`` («перевод（оригинал）», оригинал обязателен:
+    закупщик сверяет фразу по Вордстату); непереведённая фраза — оригинал
+    с маркером ``{{trend.phrase.untranslated}}`` локали, не молча. ru —
+    оригинал как есть. Возвращается готовый текстовый узел: и перевод,
+    и оригинал экранируются здесь.
+    """
+
+    item = TranslatedPhrase(phrase=phrase, translation=cache.get(phrase))
+    if code == DEFAULT_LOCALE or item.is_translated:
+        return escape_data(display_phrase(item, code))
+    # Непереведённая фраза не-дефолтной локали: маркер — {{ключ}} локали,
+    # фрагмент затем проходит через render, опечатка падает сборкой.
+    return f"{escape_data(phrase)} {{{{trend.phrase.untranslated}}}}"
+
+
+def render_index_sections(artifact: dict, code: str, cache: TranslationCache) -> str:
     """Секции классов для главной: тренды на первом экране (эпик #1).
 
     Фразы — данные (экранируются), заголовки секций — {{ключи}} локали;
@@ -238,7 +363,7 @@ def render_index_sections(artifact: dict) -> str:
         if not rows:
             continue
         items = "".join(
-            f"<li>{escape_data(p['phrase'])}</li>" for p in rows
+            f"<li>{phrase_html(p['phrase'], code, cache)}</li>" for p in rows
         )
         sections.append(
             f'<section class="trend-section">\n'
@@ -247,7 +372,7 @@ def render_index_sections(artifact: dict) -> str:
     return "\n".join(sections)
 
 
-def render_niche_section(artifact: dict) -> str:
+def render_niche_section(artifact: dict, code: str, cache: TranslationCache) -> str:
     """Секция ниш для главной: темы, а не отдельные фразы (эпик #14).
 
     Ниши приходят из артефакта (посчитаны ядром, docs/TRENDS.md): метка-тема
@@ -265,12 +390,12 @@ def render_niche_section(artifact: dict) -> str:
             raise BuildError(f"неизвестный класс ниши в артефакте: {niche['class']!r}")
         phrases = "".join(
             f'<li><a href="{{{{trends.href}}}}#phrase-{html.escape(str(entry["rank"]), quote=True)}">'
-            f"{escape_data(entry['phrase'])}</a></li>"
+            f"{phrase_html(entry['phrase'], code, cache)}</a></li>"
             for entry in niche["phrases"]
         )
         items.append(
             f'<li class="niche">\n'
-            f'<h3 class="niche-topic">{escape_data(niche["topic"])}</h3>\n'
+            f'<h3 class="niche-topic">{phrase_html(niche["topic"], code, cache)}</h3>\n'
             f'<p class="niche-class">{{{{{key}}}}}</p>\n'
             f'<ul class="niche-phrases">\n{phrases}\n</ul>\n'
             f"</li>"
@@ -284,7 +409,10 @@ def render_niche_section(artifact: dict) -> str:
 
 
 def render_trends_body(
-    artifact: dict | None, messages: dict[str, str], code: str
+    artifact: dict | None,
+    messages: dict[str, str],
+    code: str,
+    cache: TranslationCache,
 ) -> str:
     """Тело страницы трендов: пустое состояние или карточки витрины (#105)."""
 
@@ -300,18 +428,27 @@ def render_trends_body(
     data_note = ""
     generated_at = artifact.get("generated_at")
     if generated_at:
-        day = date.fromisoformat(generated_at)
+        try:
+            day = date.fromisoformat(generated_at)
+        except ValueError as exc:
+            # кривая дата — BuildError, а не сырой ValueError: тот же
+            # контракт, что у load_artifact и битого ряда истории
+            raise BuildError(
+                f"generated_at в артефакте не ISO-датой: {generated_at!r}"
+            ) from exc
         data_note = (
             f'<p class="data-date">{{{{trends.generated}}}} '
             f"{format_date(day, code)}</p>"
         )
     cards = "\n".join(
-        render_trend_card(p, messages, code) for p in artifact["phrases"]
+        render_trend_card(p, messages, code, cache) for p in artifact["phrases"]
     )
     return f"{data_note}\n<div class=\"trend-cards\">\n{cards}\n</div>"
 
 
-def render_trend_card(p: dict, messages: dict[str, str], code: str) -> str:
+def render_trend_card(
+    p: dict, messages: dict[str, str], code: str, cache: TranslationCache
+) -> str:
     """Карточка тренда: фраза, класс, скор, график истории, объяснение.
 
     График и объяснение — только в v2-артефакте (есть ``series`` и
@@ -320,7 +457,7 @@ def render_trend_card(p: dict, messages: dict[str, str], code: str) -> str:
     таблицы трендов).
     """
 
-    phrase = escape_data(p["phrase"])
+    phrase = phrase_html(p["phrase"], code, cache)
     klass = str(p["class"])
     if klass not in CARD_CLASS_KEYS:
         raise BuildError(f"неизвестный класс фразы в артефакте: {klass!r}")
@@ -481,19 +618,26 @@ def render(template: str, messages: dict[str, str], context: dict[str, str], whe
 
 
 def build(
-    out_dir: Path, build_date: date | None = None, artifact_path: Path | str | None = None
+    out_dir: Path,
+    build_date: date | None = None,
+    artifact_path: Path | str | None = None,
+    phrases_cache_path: Path | str | None = PHRASES_CACHE_PATH,
 ) -> tuple[list[Path], dict | None]:
     """Собирает страницы обеих локалей и ассеты.
 
     ``artifact_path`` — JSON-артефакт ранжирования (showcase/v2, читается
-    и v1 — карточки без графика и объяснения). Возвращает (страницы,
+    и v1 — карточки без графика и объяснения). ``phrases_cache_path`` — кэш
+    переводов фраз (#120): сборка из кэша, без сети и ключа; пополнение —
+    отдельный прогон scripts/translate_phrases.py. Возвращает (страницы,
     артефакт): артефакт — загруженный JSON или None при отсутствии/пустоте —
     тогда пустое состояние (сборка не падает, #21 п.7). Вызывающий (main)
     использует его для итогового сообщения, не перечитывая файл.
     """
     locales = load_locales()
     lint_templates()
+    lint_fragments()
     artifact = load_artifact(artifact_path)
+    cache = load_phrases_cache(phrases_cache_path)
     layout = (TEMPLATES_DIR / "layout.html").read_text(encoding="utf-8")
     fragments = {name: (TEMPLATES_DIR / f"{name}.html").read_text(encoding="utf-8") for name in PAGES}
     build_date = build_date or date.today()
@@ -510,7 +654,10 @@ def build(
         alt_prefix = "" if alt_code == DEFAULT_LOCALE else f"{alt_code}/"
 
         for name, (filename, title_key) in PAGES.items():
-            hrefs = {f"{other}.href": f"{prefix}{other}.html" for other in PAGES}
+            # Страницы одной локали лежат в одном каталоге (корень или /zh/),
+            # поэтому навигационные href-ы — «имя.html» без префикса локали:
+            # на /zh/*.html «zh/trends.html» резолвился бы в /zh/zh/… (#119).
+            hrefs = {f"{other}.href": f"{other}.html" for other in PAGES}
             # Переключатель языка ведёт на ту же страницу другой локали;
             # из /zh/... в корень — относительный ../имя.html.
             alt_href = f"../{name}.html" if prefix and not alt_prefix else f"{alt_prefix}{name}.html"
@@ -532,7 +679,9 @@ def build(
             if name == "index":
                 context["index.sections"] = (
                     render(
-                        render_index_sections(artifact) + "\n" + render_niche_section(artifact),
+                        render_index_sections(artifact, code, cache)
+                        + "\n"
+                        + render_niche_section(artifact, code, cache),
                         messages,
                         context,
                         f"{code}/index.sections",
@@ -542,7 +691,7 @@ def build(
                 )
             elif name == "trends":
                 context["trends.body"] = render(
-                    render_trends_body(artifact, messages, code),
+                    render_trends_body(artifact, messages, code, cache),
                     messages,
                     context,
                     f"{code}/trends.body",
@@ -560,7 +709,11 @@ def main(argv: list[str]) -> int:
     # argv — как из sys.argv (с именем скрипта), parse_args ждёт аргументы без него
     args = parse_args(argv[1:])
     try:
-        pages, artifact = build(args.out_dir, artifact_path=args.artifact)
+        pages, artifact = build(
+            args.out_dir,
+            artifact_path=args.artifact,
+            phrases_cache_path=args.phrases_cache,
+        )
     except BuildError as exc:
         print(f"ошибка сборки: {exc}", file=sys.stderr)
         return 1
@@ -585,6 +738,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=DEFAULT_ARTIFACT_PATH,
         help=f"JSON-артефакт витрины (по умолчанию {DEFAULT_ARTIFACT_PATH}); "
         "нет файла или фраз — пустое состояние",
+    )
+    parser.add_argument(
+        "--phrases-cache",
+        type=Path,
+        default=PHRASES_CACHE_PATH,
+        help=f"кэш переводов фраз (по умолчанию {PHRASES_CACHE_PATH}); "
+        "пополнение — scripts/translate_phrases.py, сборка сеть не трогает",
     )
     return parser.parse_args(argv)
 
