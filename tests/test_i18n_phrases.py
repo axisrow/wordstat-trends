@@ -205,3 +205,21 @@ class TestShowcaseCandidates:
         assert json.loads(cache_path.read_text(encoding="utf-8")) == {
             "курсы английского": "英语课程"
         }
+
+    def test_empty_artifact_warns_and_falls_back(self, tmp_path, capsys):
+        # Артефакт есть, но пуст — проблема сбора не маскируется молчаливым
+        # fallback (заметка ревью PR #130).
+        from scripts.translate_phrases import main
+
+        showcase = tmp_path / "showcase.json"
+        showcase.write_text(
+            json.dumps({"phrases": [], "niches": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text("{}", encoding="utf-8")
+
+        assert main(["--showcase", str(showcase), "--cache", str(cache_path)]) == 0
+        out = capsys.readouterr().out
+        assert "существует, но не содержит фраз" in out
+        assert "fallback — фикстуры" in out

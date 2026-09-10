@@ -117,11 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     phrases = showcase_phrases(args.showcase)
     source = f"артефакт витрины {args.showcase}"
     if not phrases:
-        # Fallback до первого живого сбора: артефакта нет — кандидаты те же,
-        # что видны в тестах (фикстуры + темы кластеров).
+        if args.showcase.is_file():
+            # Файл есть, а фраз нет — не замаскировать проблему сбора молчаливым
+            # fallback (заметка ревью PR #130).
+            print(
+                f"i18n: предупреждение: артефакт {args.showcase} существует, "
+                f"но не содержит фраз/niche-тем — проверьте сбор витрины"
+            )
+        else:
+            source += " не найден"
+        # Fallback до первого живого сбора: кандидаты те же, что видны в тестах
+        # (фикстуры + темы кластеров).
         phrases = fixture_phrases()
         phrases += [topic for topic in cluster_topics(phrases) if topic not in phrases]
-        source = "фикстуры + темы кластеров (артефакт витрины не найден)"
+        source += "; fallback — фикстуры + темы кластеров"
     if not phrases:
         print("i18n: кандидаты на перевод не найдены")
         return 1
