@@ -8,16 +8,24 @@
 Без ключа скрипт не падает: показывает, что уже в кэше и что осталось
 непереведённым (кэш — источник истины, сервис — пополнение для новых фраз).
 
-Кандидаты на перевод — фразы фикстур ``tests/fixtures/dynamics_*.csv``
-(парсятся из заголовка выгрузки Вордстата «Динамика частотности запросов
-«фраза», …») плюс темы кластеров из :mod:`wordstat_trends.nlp.clustering`
-(метки-темы витрины тоже показываются китайскому закупщику; конвейер
-``tfidf`` — без extra ``nlp``).
+Кандидаты на перевод — **артефакт витрины** ``site_data/showcase.json``
+(issue #127): ``phrases[].phrase`` и ``niches[].topic`` — ровно те строки,
+которые рендер ищет в кэше при сборке. Фикстуры ``tests/fixtures/
+dynamics_*.csv`` (фразы из заголовков выгрузки) плюс темы кластеров из
+:mod:`wordstat_trends.nlp.clustering` — fallback, когда артефакта ещё нет.
+
+Несовпадение ключей («курсы английского» в витрине против «курсы
+английского языка» в кэше, issue #127) решено переводом точных фраз
+артефакта, а не нормализацией при поиске: рендер (``build_site.phrase_html``)
+смотрит кэш дословно, и фаззи-поиск ради экономии одного запроса к сервису
+менял бы семантику подстановки на каждом чтении кэша. Лишний почти-дубль
+ключа в кэше дешевле и предсказуемее.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -35,8 +43,30 @@ from wordstat_trends.i18n_phrases import (  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 
+#: Живой артефакт витрины — первоисточник кандидатов (issue #127).
+SHOWCASE_PATH = ROOT / "site_data" / "showcase.json"
+
 #: Заголовок выгрузки динамики Вордстата — фраза в «кавычках-ёлочках».
 _PHRASE_RE = re.compile(r"запросов «([^»]+)»")
+
+
+def showcase_phrases(path: Path = SHOWCASE_PATH) -> list[str]:
+    """Кандидаты из живого артефакта витрины: ``phrases[].phrase`` + ``niches[].topic``.
+
+    Это ровно строки, которые ``build_site`` ищет в кэше при рендере zh-страниц,
+    поэтому ключи кэша совпадают с запросами рендера дословно. Отсутствующий
+    файл — не ошибка (артефакта может ещё не быть — fallback на фикстуры);
+    битый JSON — ошибка: молча перевести не те фразы хуже, чем упасть громко.
+    """
+
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    phrases = [item["phrase"] for item in data.get("phrases", []) if item.get("phrase")]
+    phrases += [
+        item["topic"] for item in data.get("niches", []) if item.get("topic")
+    ]
+    return list(dict.fromkeys(phrases))
 
 
 def fixture_phrases() -> list[str]:
@@ -74,15 +104,37 @@ def main(argv: list[str] | None = None) -> int:
         "--cache", type=Path, default=DEFAULT_CACHE_PATH, help="путь к кэшу переводов"
     )
     parser.add_argument(
+        "--showcase",
+        type=Path,
+        default=SHOWCASE_PATH,
+        help="артефакт витрины — первоисточник кандидатов (issue #127)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="не записывать кэш на диск"
     )
     args = parser.parse_args(argv)
 
-    phrases = fixture_phrases()
-    phrases += [topic for topic in cluster_topics(phrases) if topic not in phrases]
+    phrases = showcase_phrases(args.showcase)
+    source = f"артефакт витрины {args.showcase}"
+    if not phrases:
+        if args.showcase.is_file():
+            # Файл есть, а фраз нет — не замаскировать проблему сбора молчаливым
+            # fallback (заметка ревью PR #130).
+            print(
+                f"i18n: предупреждение: артефакт {args.showcase} существует, "
+                f"но не содержит фраз/niche-тем — проверьте сбор витрины"
+            )
+        else:
+            source += " не найден"
+        # Fallback до первого живого сбора: кандидаты те же, что видны в тестах
+        # (фикстуры + темы кластеров).
+        phrases = fixture_phrases()
+        phrases += [topic for topic in cluster_topics(phrases) if topic not in phrases]
+        source += "; fallback — фикстуры + темы кластеров"
     if not phrases:
         print("i18n: кандидаты на перевод не найдены")
         return 1
+    print(f"i18n: источник кандидатов — {source} ({len(phrases)} фраз)")
 
     api_key = os.environ.get(API_KEY_ENV)
     cache = TranslationCache.load(args.cache)

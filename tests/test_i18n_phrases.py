@@ -137,3 +137,89 @@ def test_display_phrase_normalizes_locale_tag():
     # Ревью PR #108: «zh-CN» — та же локаль zh, перевод не теряется.
     translated = TranslatedPhrase("новогодние подарки", "新年礼物")
     assert display_phrase(translated, "zh-CN") == "新年礼物（новогодние подарки）"
+
+
+class TestShowcaseCandidates:
+    """Кандидаты пополнения — живой артефакт витрины (issue #127).
+
+    Ключ кэша должен совпадать с фразой рендера дословно: строится из тех же
+    полей ``phrases[].phrase`` + ``niches[].topic``, что читает ``build_site``.
+    """
+
+    def test_phrases_and_niche_topics_are_candidates(self, tmp_path):
+        from scripts.translate_phrases import showcase_phrases
+
+        artifact = {
+            "phrases": [
+                {"phrase": "курсы английского"},
+                {"phrase": "купить телефон"},
+            ],
+            "niches": [{"topic": "английский, курс"}, {"topic": "телефон, купить"}],
+        }
+        path = tmp_path / "showcase.json"
+        path.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
+        assert showcase_phrases(path) == [
+            "курсы английского",
+            "купить телефон",
+            "английский, курс",
+            "телефон, купить",
+        ]
+
+    def test_missing_artifact_is_empty_for_fallback(self, tmp_path):
+        from scripts.translate_phrases import showcase_phrases
+
+        assert showcase_phrases(tmp_path / "нет.json") == []
+
+    def test_broken_artifact_json_raises(self, tmp_path):
+        # Битый артефакт — громкая ошибка: молча перевести не те фразы хуже.
+        from scripts.translate_phrases import showcase_phrases
+
+        path = tmp_path / "broken.json"
+        path.write_text("{не json", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            showcase_phrases(path)
+
+    def test_main_takes_candidates_from_artifact_not_fixtures(self, tmp_path, capsys):
+        # Живой сбор: фразы витрины («подарки на новый год») не входят в
+        # фикстуры, но обязаны попасть в кандидатский список отчёта.
+        from scripts.translate_phrases import main
+
+        artifact = {
+            "phrases": [{"phrase": "курсы английского"}, {"phrase": "подарки на новый год"}],
+            "niches": [{"topic": "английский, курс"}],
+        }
+        showcase = tmp_path / "showcase.json"
+        showcase.write_text(json.dumps(artifact, ensure_ascii=False), encoding="utf-8")
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text(
+            json.dumps({"курсы английского": "英语课程"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        assert main(["--showcase", str(showcase), "--cache", str(cache_path)]) == 0
+        out = capsys.readouterr().out
+        assert "артефакт витрины" in out
+        assert "подарки на новый год" in out  # фраза живого сбора — в отчёте
+        assert "английский, курс" in out  # метка кластера витрины — тоже
+        # Без ключа кэш не меняется.
+        assert json.loads(cache_path.read_text(encoding="utf-8")) == {
+            "курсы английского": "英语课程"
+        }
+
+    def test_empty_artifact_warns_and_falls_back(self, tmp_path, capsys):
+        # Артефакт есть, но пуст — проблема сбора не маскируется молчаливым
+        # fallback (заметка ревью PR #130).
+        from scripts.translate_phrases import main
+
+        showcase = tmp_path / "showcase.json"
+        showcase.write_text(
+            json.dumps({"phrases": [], "niches": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text("{}", encoding="utf-8")
+
+        assert main(["--showcase", str(showcase), "--cache", str(cache_path)]) == 0
+        out = capsys.readouterr().out
+        assert "существует, но не содержит фраз" in out
+        assert "fallback — фикстуры" in out
